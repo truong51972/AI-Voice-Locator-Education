@@ -93,11 +93,23 @@ def test_profile_selector_applies_profile_default_threshold():
         app.processEvents()
 
 
-def test_entrypoint_is_desktop_qt_not_gradio():
-    source = (Path(__file__).parents[1] / "app.py").read_text(encoding="utf-8")
-    project = (Path(__file__).parents[1] / "pyproject.toml").read_text(encoding="utf-8")
+def test_src_layout_exposes_installed_desktop_entrypoint():
+    root = Path(__file__).parents[1]
+    source = (root / "src" / "voice_locator" / "app.py").read_text(encoding="utf-8")
+    module_entry = (root / "src" / "voice_locator" / "__main__.py").read_text(encoding="utf-8")
+    project = (root / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert not (root / "app.py").exists()
     assert "app.launch" not in source
     assert "create_application" in source
     assert "qt_app.exec()" in source
+    assert "from .app import main" in module_entry
+    assert '[build-system]' in project
+    assert 'build-backend = "hatchling.build"' in project
+    assert '[project.scripts]' in project
+    assert 'voice-locator = "voice_locator.app:main"' in project
+    assert 'start = "voice-locator"' in project
+    assert 'desktop = "voice-locator"' in project
+    assert 'pythonpath = ["src"]' not in project
     assert "PySide6" in project
     assert '"gradio==' not in project
