@@ -8,7 +8,7 @@ from voice_locator.profiles import (
     INFERENCE_PROFILES,
     get_inference_profile,
 )
-from voice_locator.ui import PROFILE_CHOICES, _apply_profile_defaults
+from voice_locator.ui import PROFILE_CHOICES
 
 
 def test_profiles_expose_fast_and_accurate_modes():
@@ -39,11 +39,8 @@ def test_profile_threshold_can_use_default_or_explicit_override():
     assert threshold == 0.67
 
 
-def test_ui_profile_choices_match_registry():
+def test_desktop_profile_choices_match_registry():
     assert PROFILE_CHOICES == [
         (profile.label, profile.key)
         for profile in INFERENCE_PROFILES.values()
     ]
-
-    update = _apply_profile_defaults("fast")
-    assert update["value"] == INFERENCE_PROFILES["fast"].default_threshold
