@@ -9,6 +9,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = "voice-locator"
+ASSETS_DIR = ROOT / "assets"
+APP_ICON = ASSETS_DIR / "voice-locator.ico"
+APP_ENTRYPOINT = ROOT / "src" / "voice_locator" / "app.py"
 
 
 def _package_dir(package: str) -> Path:
@@ -53,7 +56,6 @@ def _is_wsl() -> bool:
 
 
 def _verify_models() -> None:
-    sys.path.insert(0, str(ROOT / "src"))
     from voice_locator.profiles import INFERENCE_PROFILES
 
     missing = [profile.model_path for profile in INFERENCE_PROFILES.values() if not profile.model_path.is_file()]
@@ -62,8 +64,23 @@ def _verify_models() -> None:
         raise SystemExit("Thiếu model. Chạy `poe models` trước khi build.\n  - " + pretty)
 
 
+def _verify_assets() -> None:
+    required = [
+        ASSETS_DIR / "voice-locator.png",
+        APP_ICON,
+    ]
+    missing = [path for path in required if not path.is_file()]
+    if missing:
+        pretty = "\n  - ".join(str(path) for path in missing)
+        raise SystemExit("Thiếu application icon assets:\n  - " + pretty)
+
+
 def main() -> None:
     _verify_models()
+    _verify_assets()
+
+    if not APP_ENTRYPOINT.is_file():
+        raise SystemExit(f"Thiếu package entrypoint: {APP_ENTRYPOINT}")
 
     sep = ";" if os.name == "nt" else ":"
     cmd = [
@@ -77,6 +94,8 @@ def main() -> None:
         str(ROOT / "src"),
         "--add-data",
         f"{ROOT / 'models'}{sep}models",
+        "--add-data",
+        f"{ASSETS_DIR}{sep}assets",
         "--collect-all",
         "sherpa_onnx",
         "--collect-all",
@@ -90,9 +109,14 @@ def main() -> None:
     bundled_ort_source: Path | None = None
     if os.name == "nt":
         bundled_ort_source = _find_windows_onnxruntime_dll()
-        cmd += ["--add-binary", f"{bundled_ort_source}{sep}sherpa_onnx/lib"]
+        cmd += [
+            "--add-binary",
+            f"{bundled_ort_source}{sep}sherpa_onnx/lib",
+            "--icon",
+            str(APP_ICON),
+        ]
 
-    cmd.append(str(ROOT / "app.py"))
+    cmd.append(str(APP_ENTRYPOINT))
 
     system = platform.system()
     print(f"[build] Host platform: {system} ({platform.release()})")
@@ -113,7 +137,11 @@ def main() -> None:
     internal_dir = dist_dir / "_internal"
     executable = dist_dir / (f"{APP_NAME}.exe" if os.name == "nt" else APP_NAME)
 
-    required_outputs = {"executable": executable}
+    required_outputs = {
+        "executable": executable,
+        "assets/voice-locator.png": internal_dir / "assets" / "voice-locator.png",
+        "assets/voice-locator.ico": internal_dir / "assets" / "voice-locator.ico",
+    }
     if os.name == "nt":
         required_outputs["sherpa_onnx/lib/onnxruntime.dll"] = (
             internal_dir / "sherpa_onnx" / "lib" / "onnxruntime.dll"

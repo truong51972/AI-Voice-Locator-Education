@@ -8,6 +8,11 @@ os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 
 def main() -> None:
+    """Run the native desktop application.
+
+    This function is the canonical application entrypoint used by both the
+    installed ``voice-locator`` console script and ``python -m voice_locator``.
+    """
     smoke_test = "--smoke-test" in sys.argv
     if smoke_test:
         # CI/build hosts may not expose a desktop display. Qt can still construct
@@ -16,7 +21,10 @@ def main() -> None:
 
     # Configure Windows native DLL resolution before anything can import sherpa's
     # extension module. This protects the packaged app from stale System32 ORT DLLs.
-    from voice_locator.runtime import configure_windows_native_runtime, selected_onnxruntime_path
+    from voice_locator.runtime import (
+        configure_windows_native_runtime,
+        selected_onnxruntime_path,
+    )
 
     configure_windows_native_runtime(strict=(sys.platform == "win32"))
 

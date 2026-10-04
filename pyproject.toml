@@ -1,6 +1,10 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
 [project]
 name = "voice-locator"
-version = "0.5.0"
+version = "0.5.1"
 description = "AI voice matching and speaker localization for middle-school educational activities"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -16,7 +20,14 @@ dependencies = [
   "soundfile>=0.12,<1",
 ]
 
+[project.scripts]
+voice-locator = "voice_locator.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voice_locator"]
+
 [tool.uv]
+package = true
 environments = [
   "sys_platform == 'linux' and platform_machine == 'x86_64'",
   "sys_platform == 'win32' and platform_machine == 'AMD64'",
@@ -40,13 +51,12 @@ dev = [
 
 [tool.poe.tasks]
 models = "python scripts/download_models.py"
-desktop = "python app.py"
-start = "python app.py"
+desktop = "voice-locator"
+start = "voice-locator"
 test = "pytest -q"
-check = "python -m compileall -q app.py src scripts tests"
+check = "python -m compileall -q src scripts tests"
 build = "python scripts/build.py"
 docs = "quarto render docs/AI_Voice_Locator_Giao_Duc.qmd"
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
 testpaths = ["tests"]

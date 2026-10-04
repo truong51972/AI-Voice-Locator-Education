@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 title AI Voice Locator - One Click Setup and Build
 
-set "APP_VERSION=0.5.0"
+set "APP_VERSION=0.5.1"
 set "PYTHON_VERSION=3.12"
 set "PROJECT_ROOT=%CD%"
 set "LOCAL_UV_DIR=%PROJECT_ROOT%\.tools\uv"
