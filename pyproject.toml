@@ -1,18 +1,15 @@
 [project]
 name = "voice-locator"
-version = "0.4.8"
+version = "0.5.0"
 description = "AI voice matching and speaker localization for middle-school educational activities"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-  "gradio==6.28.0",
   "imageio-ffmpeg>=0.5,<1",
-  "gradio-client==2.7.1",
-  "groovy==0.1.2",
-  "safehttpx==0.1.7",
   "numpy>=1.26,<3",
   "plotly>=5.24,<7",
   "poethepoet>=0.35,<1",
+  "PySide6>=6.8,<7",
   "scipy>=1.13,<2",
   "sherpa-onnx==1.13.8",
   "sherpa-onnx-core==1.13.8",
@@ -43,7 +40,7 @@ dev = [
 
 [tool.poe.tasks]
 models = "python scripts/download_models.py"
-gradio = "python app.py"
+desktop = "python app.py"
 start = "python app.py"
 test = "pytest -q"
 check = "python -m compileall -q app.py src scripts tests"

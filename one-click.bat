@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 title AI Voice Locator - One Click Setup and Build
 
-set "APP_VERSION=0.4.8"
+set "APP_VERSION=0.5.0"
 set "PYTHON_VERSION=3.12"
 set "PROJECT_ROOT=%CD%"
 set "LOCAL_UV_DIR=%PROJECT_ROOT%\.tools\uv"
@@ -12,9 +12,6 @@ set "RELEASE_DIR=%PROJECT_ROOT%\release"
 set "RELEASE_ZIP=%RELEASE_DIR%\AI-Voice-Locator-v%APP_VERSION%-Windows.zip"
 set "UV_EXE="
 
-rem Keep the offline/local application and build pipeline free from Gradio telemetry.
-rem This also prevents a Gradio telemetry thread from keeping pytest alive on some Windows networks.
-set "GRADIO_ANALYTICS_ENABLED=False"
 set "HF_HUB_DISABLE_TELEMETRY=1"
 
 call :banner
@@ -51,7 +48,7 @@ goto :eof
 :banner
 echo ================================================================
 echo   AI Voice Locator v%APP_VERSION%
-echo   One-click Windows setup + model download + test + build
+echo   PySide6 desktop - one-click setup + model download + test + build
 echo ================================================================
 echo.
 exit /b 0
@@ -142,16 +139,16 @@ exit /b 0
 
 :download_models
 echo.
-echo [5/7] Downloading/verifying CAM++ speaker model ^(~29.6 MB^)...
+echo [5/7] Downloading/verifying configured speaker embedding models...
 "%UV_EXE%" run poe models
 if errorlevel 1 (
   echo [ERROR] Model download/verification failed.
   echo         If GitHub/Hugging Face is blocked on this network,
-  echo         download the CAM++ ONNX model manually into the models folder
+  echo         download the required ONNX models manually into the models folder
   echo         and run one-click.bat again.
   exit /b 1
 )
-echo [OK] Model is ready.
+echo [OK] Models are ready.
 exit /b 0
 
 :verify_source
@@ -172,7 +169,7 @@ exit /b 0
 
 :build_app
 echo.
-echo [7/7] Building standalone Windows application...
+echo [7/7] Building standalone Windows desktop application...
 "%UV_EXE%" run poe build
 if errorlevel 1 (
   echo [ERROR] PyInstaller build or packaged smoke test failed.

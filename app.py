@@ -3,34 +3,31 @@ from __future__ import annotations
 import os
 import sys
 
-# The application is designed for local/offline educational use. Disable
-# framework telemetry before Gradio is imported. This also avoids a non-daemon
-# analytics thread delaying interpreter shutdown on restricted Windows networks.
-os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+# Keep the local/offline application free from external telemetry.
 os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
 
 
 def main() -> None:
+    smoke_test = "--smoke-test" in sys.argv
+    if smoke_test:
+        # CI/build hosts may not expose a desktop display. Qt can still construct
+        # the complete widget tree through its offscreen platform plugin.
+        os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
     # Configure Windows native DLL resolution before anything can import sherpa's
-    # extension module. This also makes the packaged app resilient to stale
-    # onnxruntime.dll files installed globally in Windows/System32.
+    # extension module. This protects the packaged app from stale System32 ORT DLLs.
     from voice_locator.runtime import configure_windows_native_runtime, selected_onnxruntime_path
 
     configure_windows_native_runtime(strict=(sys.platform == "win32"))
 
-    # Keep imports inside main so the packaged executable can provide a controlled
-    # smoke-test path. The smoke test constructs the UI and every configured
-    # speaker extractor, so package-data/native/model problems fail the build early.
-    from voice_locator.ui import build_app
+    from voice_locator.ui import build_app, create_application
 
-    app = build_app()
+    qt_app = create_application(sys.argv)
+    window = build_app()
 
-    if "--smoke-test" in sys.argv:
-        import gradio  # noqa: F401
-        import gradio_client  # noqa: F401
+    if smoke_test:
         import imageio_ffmpeg  # noqa: F401
-        import groovy  # noqa: F401
-        import safehttpx  # noqa: F401
+        import PySide6  # noqa: F401
 
         from voice_locator.embedding import SpeakerEmbedder
         from voice_locator.media import ffmpeg_executable
@@ -46,11 +43,13 @@ def main() -> None:
 
         ffmpeg_path = ffmpeg_executable()
         print(f"[smoke] Bundled FFmpeg: {ffmpeg_path}")
-        print("[smoke] UI + Gradio + FFmpeg + all speaker profiles: OK")
+        print("[smoke] PySide6 desktop UI + FFmpeg + all speaker profiles: OK")
+        window.close()
+        qt_app.quit()
         return
 
-    # Intentionally use Gradio's native theme/layout with no custom CSS or JS.
-    app.launch(inbrowser=True)
+    window.show()
+    raise SystemExit(qt_app.exec())
 
 
 if __name__ == "__main__":
