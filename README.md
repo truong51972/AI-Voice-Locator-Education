@@ -35,6 +35,8 @@ Yêu cầu:
 - Windows x86-64, Linux x86-64, macOS Intel hoặc Apple Silicon
 - `uv`
 
+Project dùng **standard `src/` layout** và được khai báo là installable package trong `pyproject.toml`. `uv sync` sẽ cài project vào environment thay vì phụ thuộc vào việc chạy một script ở repository root.
+
 ```bash
 uv sync --dev
 uv run poe models
@@ -43,6 +45,8 @@ uv run poe models
 `poe models` tải và kiểm tra tất cả speaker embedding model được khai báo trong `src/voice_locator/profiles.py`.
 
 ## Chạy desktop app
+
+Cách khuyến nghị:
 
 ```bash
 uv run poe start
@@ -54,7 +58,21 @@ hoặc:
 uv run poe desktop
 ```
 
-Ứng dụng mở trực tiếp một cửa sổ Qt native.
+Hai Poe task đều gọi console entrypoint được cài từ:
+
+```toml
+[project.scripts]
+voice-locator = "voice_locator.app:main"
+```
+
+Có thể chạy trực tiếp package theo hai cách tương đương:
+
+```bash
+uv run voice-locator
+uv run python -m voice_locator
+```
+
+Không còn `app.py` ở repository root.
 
 ## Editor workflow
 
@@ -129,7 +147,7 @@ Script sẽ:
 1. kiểm tra Windows x64;
 2. dùng `uv` hiện có hoặc cài project-local `uv`;
 3. đảm bảo Python 3.12;
-4. sync dependencies;
+4. sync dependencies và install `voice_locator` package từ `src/`;
 5. tải/verify tất cả speaker embedding models;
 6. chạy compile check + unit tests;
 7. build standalone app bằng PyInstaller với application icon;
@@ -149,7 +167,7 @@ Windows `.exe` phải được build trực tiếp trong CMD/PowerShell Windows;
 
 ```bash
 uv run poe models   # tải/verify speaker embedding models
-uv run poe desktop  # mở PySide6 desktop app
+uv run poe desktop  # chạy installed voice-locator entrypoint
 uv run poe start    # alias desktop app
 uv run poe test     # unit tests
 uv run poe check    # compile check
@@ -160,23 +178,29 @@ uv run poe docs     # render Quarto docs
 ## Project structure
 
 ```text
-app.py
+pyproject.toml
 assets/
 ├── voice-locator.png
 └── voice-locator.ico
-src/voice_locator/
-├── audio.py
-├── embedding.py
-├── localization.py
-├── media.py
-├── pipeline.py
-├── profiles.py
-├── runtime.py
-├── service.py       # desktop-facing application service
-├── similarity.py
-├── ui.py            # PySide6 editor workspace
-└── visualization.py # legacy/research Plotly helpers
+src/
+└── voice_locator/
+    ├── __init__.py
+    ├── __main__.py       # python -m voice_locator
+    ├── app.py            # canonical application entrypoint
+    ├── audio.py
+    ├── embedding.py
+    ├── localization.py
+    ├── media.py
+    ├── pipeline.py
+    ├── profiles.py
+    ├── runtime.py
+    ├── service.py        # desktop-facing application service
+    ├── similarity.py
+    ├── ui.py             # PySide6 editor workspace
+    └── visualization.py  # legacy/research Plotly helpers
 ```
+
+`app.py` nằm trong package, không nằm ở repository root. Các domain module hiện vẫn giữ flat bên trong `voice_locator`; có thể tiếp tục tách thành `ui/`, `inference/`, `media/`, `runtime/` packages khi cần mà không ảnh hưởng entrypoint/package installation.
 
 ## Nghiên cứu và đánh giá
 
@@ -208,4 +232,4 @@ v0.5.0 thay presentation layer Gradio bằng PySide6/Qt 6. Model, localization m
 
 ## v0.5.1 — Video-editor workspace
 
-v0.5.1 chuyển main analysis experience sang editor workspace không-scroll: preview + overlay ở trái, compact inspector ở phải và speaker timeline cố định ở đáy. Timeline có playhead đồng bộ, detected regions được hiển thị như clips, và app có branding icon cho cửa sổ lẫn Windows executable.
+v0.5.1 chuyển main analysis experience sang editor workspace không-scroll: preview + overlay ở trái, compact inspector ở phải và speaker timeline cố định ở đáy. Timeline có playhead đồng bộ, detected regions được hiển thị như clips, app có branding icon cho cửa sổ lẫn Windows executable, đồng thời chuẩn hóa application entrypoint thành installable `src/voice_locator` package.
