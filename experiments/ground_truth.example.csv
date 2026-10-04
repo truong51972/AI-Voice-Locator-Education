@@ -1,0 +1,3 @@
+audio_file,speaker,start_seconds,end_seconds
+conversation_01.wav,target,5.0,10.0
+conversation_01.wav,target,15.0,20.0

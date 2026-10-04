@@ -1,0 +1,55 @@
+[project]
+name = "voice-locator"
+version = "0.4.8"
+description = "AI voice matching and speaker localization for middle-school educational activities"
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "gradio==6.28.0",
+  "imageio-ffmpeg>=0.5,<1",
+  "gradio-client==2.7.1",
+  "groovy==0.1.2",
+  "safehttpx==0.1.7",
+  "numpy>=1.26,<3",
+  "plotly>=5.24,<7",
+  "poethepoet>=0.35,<1",
+  "scipy>=1.13,<2",
+  "sherpa-onnx==1.13.8",
+  "sherpa-onnx-core==1.13.8",
+  "soundfile>=0.12,<1",
+]
+
+[tool.uv]
+environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "sys_platform == 'win32' and platform_machine == 'AMD64'",
+  "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+  "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+required-environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "sys_platform == 'win32' and platform_machine == 'AMD64'",
+  "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+  "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+
+[dependency-groups]
+dev = [
+  "jupyter>=1.1,<2",
+  "matplotlib>=3.9,<4",
+  "pytest>=8.3,<9",
+  "pyinstaller>=6.14,<7",
+]
+
+[tool.poe.tasks]
+models = "python scripts/download_models.py"
+gradio = "python app.py"
+start = "python app.py"
+test = "pytest -q"
+check = "python -m compileall -q app.py src scripts tests"
+build = "python scripts/build.py"
+docs = "quarto render docs/AI_Voice_Locator_Giao_Duc.qmd"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

@@ -1,0 +1,505 @@
+---
+title: "AI VOICE LOCATOR"
+subtitle: "ỨNG DỤNG AI TRONG ĐỊNH VỊ VÀ ĐỐI SÁNH GIỌNG NÓI TRONG GIÁO DỤC"
+lang: vi
+jupyter: python3
+execute:
+  echo: false
+  warning: false
+  error: false
+  cache: false
+format:
+  pdf:
+    pdf-engine: xelatex
+    documentclass: scrartcl
+    papersize: a4
+    fontsize: 11pt
+    geometry:
+      - top=22mm
+      - bottom=22mm
+      - left=24mm
+      - right=24mm
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    colorlinks: true
+    fig-cap-location: bottom
+    fig-pos: "htbp"
+    tbl-cap-location: top
+    linestretch: 1.08
+  docx:
+    toc: true
+    toc-depth: 3
+    number-sections: true
+    fig-cap-location: bottom
+    tbl-cap-location: top
+crossref:
+  fig-title: "Hình"
+  tbl-title: "Bảng"
+---
+
+# Tóm tắt đề tài
+
+**AI Voice Locator** là một hệ thống AI nhỏ gọn dùng **speaker embedding** và **cosine similarity** để đối sánh một hoặc nhiều mẫu giọng tham chiếu có tên với audio/video dài, từ đó xác định các khoảng thời gian có khả năng chứa từng người nói. Trong phiên bản dành cho giáo dục, hệ thống được định hướng như một công cụ hỗ trợ xem lại hoạt động học tập: thảo luận nhóm, tranh biện, thuyết trình, luyện nói/đọc thành tiếng và phân tích bản ghi lớp học.
+
+Điểm cốt lõi của đề tài không phải là nhận dạng nội dung lời nói. Hệ thống không cần biết học sinh nói câu gì; nó tập trung vào **đặc trưng người nói**. Vì vậy bài toán gần với **speaker verification + speaker localization** hơn là speech recognition.
+
+::: {.callout-note title="Ý tưởng cốt lõi"}
+Người dùng thu một hoặc nhiều mẫu giọng khoảng 3–5 giây, đặt tên cho từng người, rồi tải audio hoặc video hoạt động học tập. Hệ thống chỉ encode target windows một lần và highlight vùng vượt ngưỡng riêng cho từng reference speaker.
+:::
+
+# Bối cảnh và ý nghĩa trong giáo dục
+
+Trong các hoạt động học tập, giáo viên và học sinh thường phải nghe lại một bản ghi khá dài chỉ để tìm phần phát biểu của một người. Điều này xuất hiện trong nhiều tình huống:
+
+- xem lại thảo luận nhóm;
+- phản hồi bài tranh biện hoặc thuyết trình;
+- kiểm tra các đoạn luyện nói hoặc đọc thành tiếng;
+- tìm nhanh phần của giáo viên/người trình bày trong bản ghi lớp học.
+
+AI Voice Locator hỗ trợ bước **định vị** này. Hệ thống không thay thế đánh giá của giáo viên và không tự động suy luận chất lượng học tập từ thời lượng nói.
+
+## Các kịch bản ứng dụng
+
+| Kịch bản | Hệ thống hỗ trợ | Không nên suy diễn |
+|---|---|---|
+| Thảo luận nhóm | Tìm các khoảng một thành viên đã phát biểu | Thời lượng nói nhiều = đóng góp tốt |
+| Tranh biện / thuyết trình | Tìm nhanh phần phát biểu để xem lại và phản hồi | Similarity cao = bài nói tốt |
+| Luyện nói / đọc thành tiếng | Đối sánh mẫu giọng với các đoạn luyện tập | Tự động chấm phát âm nếu chưa có module riêng |
+| Bản ghi lớp học | Tìm phần của một người tham chiếu | Nhận diện hàng loạt học sinh hoặc giám sát liên tục |
+
+: Các kịch bản giáo dục phù hợp với phạm vi MVP. {#tbl-use-cases}
+
+# Mục tiêu
+
+Đề tài đặt ra các mục tiêu sau:
+
+1. Thu hoặc tải 1–6 mẫu giọng tham chiếu khoảng 3–5 giây và đặt tên cho từng người.
+2. Nhận một audio hoặc video hoạt động học tập dài hơn.
+3. Với video, tách audio track cục bộ; chuẩn hóa target về mono 16 kHz.
+4. Chia target thành các **sliding windows**.
+5. Dùng mô hình pretrained nhẹ để tạo **speaker embedding** cho từng reference và target window.
+6. Encode target windows một lần, sau đó tính **cosine similarity matrix** `[speaker × window]`.
+7. Làm mượt score, áp dụng threshold và gộp các window thành vùng thời gian riêng cho từng speaker.
+8. Hiển thị multi-speaker timeline, KPI theo speaker và bảng timestamp.
+9. Cho phép thay đổi threshold trong phần thiết lập nâng cao để phục vụ thí nghiệm.
+10. Chạy được trên CPU và có thể đóng gói thành ứng dụng Windows kèm FFmpeg runtime.
+
+# Câu hỏi nghiên cứu
+
+> **Ngưỡng tương đồng, độ dài mẫu giọng và nhiễu môi trường ảnh hưởng như thế nào đến khả năng định vị và đối sánh giọng nói trong bản ghi hoạt động học tập?**
+
+Câu hỏi này giúp đề tài vừa có một sản phẩm demo, vừa có phần thực nghiệm khoa học có thể đo lường được.
+
+# Phạm vi bài toán
+
+Phiên bản MVP cố ý giữ phạm vi nhỏ và rõ:
+
+- Có **1–6 người đã biết cần tìm** trong một lượt UI.
+- Mỗi người có một đoạn giọng tham chiếu và tên hiển thị.
+- Có một audio hoặc video target chứa một hoặc nhiều người nói.
+- Hệ thống trả về các khoảng thời gian có giọng tương đồng cho từng reference theo cơ chế independent matching.
+
+MVP **không** thực hiện full speaker diarization, không tự gán nhãn tất cả người nói, không nhận diện học sinh từ một cơ sở dữ liệu lớn và không dùng kết quả làm căn cứ chấm điểm/kỷ luật tự động.
+
+# Nguyên lý kỹ thuật
+
+## Speaker embedding
+
+Speaker embedding là một vector số học mô tả các đặc trưng liên quan tới người nói. Có thể hình dung đây là một **biểu diễn số của giọng nói**. Hai đoạn audio của cùng một người thường tạo ra embedding gần nhau hơn so với hai người khác nhau, dù nội dung câu nói không giống nhau.
+
+MVP sử dụng **CAM++** dạng ONNX thông qua `sherpa-onnx`, phù hợp với mục tiêu chạy offline trên CPU và không cần mang theo toàn bộ PyTorch runtime.
+
+## Cosine similarity
+
+Hai embedding $A$ và $B$ được so sánh bằng cosine similarity:
+
+$$
+\operatorname{cosine}(A,B)=\frac{A\cdot B}{\lVert A\rVert\lVert B\rVert}
+$$ {#eq-cosine}
+
+Score càng cao thì hai vector càng gần nhau theo hướng. Trong hệ thống, một window có score vượt **threshold** sẽ trở thành ứng viên cùng người nói.
+
+Threshold không phải một con số tuyệt đối đúng cho mọi môi trường. Đây là một biến quan trọng cần được hiệu chỉnh và khảo sát bằng dữ liệu thực nghiệm.
+
+## Sliding window
+
+Bản ghi dài được chia thành các cửa sổ chồng lấn. Cấu hình mặc định:
+
+- Window: 2,5 giây.
+- Hop: 0,5 giây.
+
+```{python}
+#| label: fig-sliding-window
+#| fig-cap: "Minh họa sliding window chồng lấn trên bản ghi hoạt động học tập."
+#| fig-width: 7.2
+#| fig-height: 2.6
+
+import matplotlib.pyplot as plt
+
+window = 2.5
+starts = [0.0, 0.5, 1.0, 1.5, 2.0]
+fig, ax = plt.subplots()
+for row, start in enumerate(starts[::-1]):
+    y = row
+    ax.broken_barh([(start, window)], (y - 0.32, 0.64), alpha=0.55)
+    ax.text(start + window / 2, y, f"Window {len(starts)-row}", ha="center", va="center", fontsize=9)
+ax.set_xlim(0, 5.2)
+ax.set_ylim(-0.7, len(starts) - 0.3)
+ax.set_xlabel("Thời gian (giây)")
+ax.set_yticks([])
+ax.spines[["left", "right", "top"]].set_visible(False)
+ax.grid(axis="x", alpha=0.2)
+plt.tight_layout()
+plt.show()
+```
+
+Các window chồng lấn làm tăng số lần inference nhưng giúp biên thời gian được xác định mịn hơn so với chia audio thành block rời nhau.
+
+# Pipeline hệ thống
+
+```{python}
+#| label: fig-pipeline
+#| fig-cap: "Pipeline xử lý của AI Voice Locator trong bối cảnh giáo dục."
+#| fig-width: 7.2
+#| fig-height: 3.8
+
+import matplotlib.pyplot as plt
+from matplotlib.patches import FancyBboxPatch, FancyArrowPatch
+
+fig, ax = plt.subplots()
+ax.set_xlim(0, 12)
+ax.set_ylim(0, 7)
+ax.axis("off")
+
+def box(x, y, w, h, text):
+    patch = FancyBboxPatch((x, y), w, h, boxstyle="round,pad=0.03,rounding_size=0.08", linewidth=1.2, fill=False)
+    ax.add_patch(patch)
+    ax.text(x + w / 2, y + h / 2, text, ha="center", va="center", fontsize=9)
+
+def arrow(x1, y1, x2, y2):
+    ax.add_patch(FancyArrowPatch((x1, y1), (x2, y2), arrowstyle="->", mutation_scale=12, linewidth=1.1))
+
+box(0.4, 5.1, 2.1, 0.9, "Mẫu giọng")
+box(3.1, 5.1, 2.1, 0.9, "Chuẩn hóa")
+box(5.8, 5.1, 2.2, 0.9, "CAM++ embedding")
+box(8.7, 5.1, 2.5, 0.9, "Reference vector")
+arrow(2.5, 5.55, 3.1, 5.55); arrow(5.2, 5.55, 5.8, 5.55); arrow(8.0, 5.55, 8.7, 5.55)
+
+box(0.4, 2.9, 2.1, 0.9, "Bản ghi học tập")
+box(3.1, 2.9, 2.1, 0.9, "Chuẩn hóa")
+box(5.8, 2.9, 2.2, 0.9, "Sliding windows")
+box(8.7, 2.9, 2.5, 0.9, "Window embeddings")
+arrow(2.5, 3.35, 3.1, 3.35); arrow(5.2, 3.35, 5.8, 3.35); arrow(8.0, 3.35, 8.7, 3.35)
+
+box(4.5, 0.7, 2.7, 0.9, "Cosine similarity")
+box(8.0, 0.7, 3.2, 0.9, "Threshold + smoothing\n+ merge segments")
+arrow(9.95, 5.1, 6.2, 1.6); arrow(9.95, 2.9, 6.5, 1.6); arrow(7.2, 1.15, 8.0, 1.15)
+ax.text(11.45, 1.15, "→ Timeline + KPI", va="center", fontsize=10, fontweight="bold")
+plt.tight_layout()
+plt.show()
+```
+
+Pipeline gồm hai nhánh:
+
+1. **Reference branch:** tạo embedding từ mẫu giọng.
+2. **Target branch:** chia bản ghi thành nhiều window và tạo embedding cho từng window.
+
+Sau đó hệ thống tính similarity, làm mượt score, áp dụng threshold, gộp các vùng liền kề và hiển thị kết quả.
+
+# Từ similarity đến vùng phát hiện
+
+Một window vượt threshold chưa đủ để tạo kết quả dễ đọc. Hệ thống thực hiện hậu xử lý:
+
+1. Tính similarity cho từng window.
+2. Làm mượt chuỗi score.
+3. Loại vùng gần-silence bằng RMS gate.
+4. Áp dụng threshold.
+5. Gộp các window dương tính gần nhau.
+6. Loại segment quá ngắn.
+7. Highlight segment trên timeline.
+
+```{python}
+#| label: fig-similarity-timeline
+#| fig-cap: "Ví dụ chuyển chuỗi similarity thành vùng phát hiện trên timeline."
+#| fig-width: 7.2
+#| fig-height: 3.8
+
+import numpy as np
+import matplotlib.pyplot as plt
+
+x = np.arange(0, 20.5, 0.5)
+score = 0.28 + 0.07 * np.sin(x * 0.8)
+score += 0.55 * np.exp(-((x - 7.2) ** 2) / 7.0)
+score += 0.48 * np.exp(-((x - 16.8) ** 2) / 4.5)
+score = np.clip(score, 0.05, 0.95)
+threshold = 0.62
+
+fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, gridspec_kw={"height_ratios": [3, 1], "hspace": 0.14})
+ax1.plot(x, score, linewidth=1.8)
+ax1.axhline(threshold, linestyle="--", linewidth=1.2)
+ax1.text(19.7, threshold + 0.025, "threshold", ha="right", va="bottom", fontsize=8)
+ax1.set_ylabel("Cosine similarity")
+ax1.set_ylim(0, 1)
+ax1.grid(alpha=0.2)
+
+for start, end in [(5.0, 9.5), (15.0, 19.0)]:
+    ax2.axvspan(start, end, alpha=0.35)
+    ax2.text((start + end) / 2, 0.5, "MATCH", ha="center", va="center", fontsize=9)
+ax2.set_ylim(0, 1)
+ax2.set_yticks([])
+ax2.set_xlabel("Thời gian (giây)")
+ax2.spines[["left", "right", "top"]].set_visible(False)
+ax2.set_title("Vùng phát hiện", loc="left", fontsize=9)
+plt.tight_layout()
+plt.show()
+```
+
+# Thiết kế giao diện giáo dục
+
+Giao diện mới ưu tiên khả năng sử dụng bởi học sinh/giáo viên thay vì để toàn bộ tham số kỹ thuật trên màn hình chính.
+
+## Tab Phân tích giọng nói
+
+Workflow gồm ba bước rõ ràng:
+
+1. Chọn **bối cảnh giáo dục** và tên hiển thị của người nói.
+2. Thu/upload mẫu giọng và upload bản ghi hoạt động.
+3. Chạy phân tích và xem KPI + timeline + bảng timestamp.
+
+Các bối cảnh có sẵn gồm:
+
+- thảo luận / làm việc nhóm;
+- tranh biện / thuyết trình;
+- luyện nói / đọc thành tiếng;
+- xem lại bản ghi hoạt động lớp học.
+
+Threshold được đưa vào **Thiết lập nâng cao / dùng cho thí nghiệm**, giúp workflow chính gọn hơn nhưng vẫn giữ khả năng nghiên cứu.
+
+## KPI hiển thị
+
+| KPI | Ý nghĩa |
+|---|---|
+| Vùng khớp | Số segment vượt điều kiện sau hậu xử lý |
+| Thời lượng khớp | Tổng độ dài các segment phát hiện |
+| Tỷ lệ xuất hiện | Thời lượng khớp / tổng thời lượng bản ghi |
+| Similarity cao nhất | Score cosine lớn nhất trong các segment phát hiện |
+
+: KPI của màn hình kết quả. {#tbl-ui-kpis}
+
+**Tỷ lệ xuất hiện không phải điểm số học tập.** Nó chỉ là một chỉ báo mô tả bản ghi.
+
+## Tab Ứng dụng trong giáo dục
+
+Tab này giải thích hệ thống có thể và không thể làm gì, tránh tạo kỳ vọng rằng MVP là một hệ thống nhận diện học sinh toàn diện.
+
+## Tab Hướng dẫn & quyền riêng tư
+
+Tab cung cấp hướng dẫn về consent, tối thiểu hóa dữ liệu, cách đọc similarity và các điều kiện dễ gây sai như nhiễu, nói chồng tiếng hoặc microphone khác biệt.
+
+# Thiết kế thí nghiệm
+
+## Biến độc lập
+
+| Biến | Giá trị ví dụ | Mục đích |
+|---|---|---|
+| Threshold | 0,45; 0,55; 0,65; 0,75 | Khảo sát độ nhạy của quyết định |
+| Độ dài reference | 2 s; 3 s; 5 s | Ảnh hưởng của lượng dữ liệu mẫu |
+| Mức nhiễu | yên tĩnh; nhẹ; cao hơn | Độ bền vững trong môi trường lớp học |
+| Loại hoạt động | đọc; thuyết trình; thảo luận | Khảo sát độ khó theo ngữ cảnh |
+
+: Các biến độc lập đề xuất. {#tbl-independent-variables}
+
+Không nên thay đổi tất cả biến cùng lúc. Mỗi thí nghiệm nên giữ các yếu tố còn lại tương đối ổn định.
+
+## Ground truth
+
+Chuẩn bị một bản ghi có timeline người nói đã biết, ví dụ:
+
+| Khoảng thời gian | Người nói |
+|---|---|
+| 0–5 s | B |
+| 5–10 s | A |
+| 10–15 s | C |
+| 15–20 s | A |
+
+: Ví dụ ground truth đơn giản. {#tbl-ground-truth}
+
+Khi A là reference, ground truth cần phát hiện là **5–10 s** và **15–20 s**.
+
+## Chỉ số đánh giá
+
+- **Precision:** trong các vùng hệ thống báo đúng người, bao nhiêu phần thực sự đúng.
+- **Recall:** trong toàn bộ vùng người đó thực sự xuất hiện, hệ thống tìm được bao nhiêu phần.
+- **F1-score:** cân bằng giữa Precision và Recall.
+- **Processing time:** thời gian xử lý trên CPU.
+
+::: {.callout-tip title="Mức thí nghiệm phù hợp cấp 2"}
+Bộ dữ liệu nhỏ nhưng có ground truth tốt thường hữu ích hơn rất nhiều audio không được ghi nhãn. Có thể bắt đầu với 3–5 người, một số recording ngắn và nhiều mức threshold.
+:::
+
+# Giả thuyết
+
+Các giả thuyết ban đầu:
+
+- Threshold quá thấp tăng recall nhưng có thể tăng false positive.
+- Threshold quá cao giảm false positive nhưng có thể bỏ sót.
+- Mẫu reference dài và rõ hơn có thể tạo embedding ổn định hơn.
+- Nhiễu lớp học làm giảm similarity giữa hai đoạn cùng người.
+- Nói chồng tiếng làm bài toán khó hơn.
+- Speech enhancement có thể làm tín hiệu nghe sạch hơn nhưng chưa chắc làm speaker embedding tốt hơn; cần kiểm chứng bằng thực nghiệm thay vì mặc định bật DSP.
+
+# Kiến trúc phần mềm
+
+| Thành phần | Công nghệ | Vai trò |
+|---|---|---|
+| Ngôn ngữ | Python 3.11–3.12 | Xử lý chính |
+| UI | Gradio | Record/upload, scenario, advanced threshold, kết quả |
+| Speaker embedding | CAM++ ONNX | Trích xuất đặc trưng người nói |
+| Inference | sherpa-onnx | Chạy model trên CPU |
+| Audio | NumPy, SciPy, SoundFile | Chuẩn hóa và xử lý tín hiệu |
+| Video decode | imageio-ffmpeg / FFmpeg | Tách audio track cục bộ từ video |
+| Visualization | Plotly | Waveform, similarity, detected timeline |
+| Dependency/tasks | uv, Poe the Poet | Quản lý môi trường và lệnh chạy |
+| Windows build | PyInstaller | Đóng gói ứng dụng |
+
+: Stack chính của MVP. {#tbl-stack}
+
+Database chưa cần thiết vì mỗi lần phân tích chỉ dùng một nhóm reference nhỏ và một target media; toàn bộ state có thể giữ trong phiên Gradio.
+
+# Cấu trúc source code
+
+```text
+voice-locator/
+├── app.py
+├── pyproject.toml
+├── README.md
+├── docs/
+│   ├── AI_Voice_Locator_Giao_Duc.qmd
+│   ├── AI_Voice_Locator_Giao_Duc_Ban_Giao.docx
+│   └── implementation_plan.md
+├── models/
+├── scripts/
+├── src/voice_locator/
+│   ├── audio.py
+│   ├── embedding.py
+│   ├── localization.py
+│   ├── pipeline.py
+│   ├── similarity.py
+│   ├── ui.py
+│   └── visualization.py
+└── tests/
+```
+
+# Cách chạy
+
+Cài dependency:
+
+```bash
+uv sync --dev
+```
+
+Tải model:
+
+```bash
+uv run poe models
+```
+
+Chạy app:
+
+```bash
+uv run poe start
+```
+
+Chạy test:
+
+```bash
+uv run poe test
+```
+
+Kiểm tra compile:
+
+```bash
+uv run poe check
+```
+
+Build Windows:
+
+```bash
+uv run poe build
+```
+
+Render tài liệu:
+
+```bash
+uv run poe docs
+```
+
+# An toàn, đạo đức và quyền riêng tư
+
+Vì giọng nói có thể là dữ liệu nhạy cảm trong bối cảnh học đường, MVP áp dụng các nguyên tắc sau:
+
+1. **Consent:** chỉ thu âm và phân tích khi có sự đồng ý phù hợp theo quy định áp dụng.
+2. **Data minimization:** chỉ thu phần audio cần cho mục tiêu nghiên cứu.
+3. **Local-first:** ưu tiên chạy cục bộ thay vì upload lên dịch vụ không cần thiết.
+4. **Pseudonymization:** dùng tên như `Học sinh A` thay vì thông tin định danh đầy đủ khi có thể.
+5. **Human interpretation:** kết quả chỉ hỗ trợ giáo viên/học sinh xem lại, không phải kết luận tự động.
+6. **Retention:** xóa audio khi không còn mục tiêu sử dụng.
+
+::: {.callout-warning title="Không dùng để tự động chấm điểm"}
+Speaking time, số vùng khớp và similarity không đo được chất lượng đóng góp, kiến thức hoặc thái độ của học sinh. Các chỉ số này chỉ mô tả tín hiệu âm thanh và cần được diễn giải trong đúng bối cảnh.
+:::
+
+# Giới hạn
+
+- Chỉ tìm các speaker đã có reference; không tự khám phá speaker chưa biết.
+- UI v0.3.0 giới hạn tối đa 6 reference speakers mỗi lượt để giữ trải nghiệm desktop đơn giản.
+- Chưa có full speaker diarization; một timestamp có thể match nhiều reference nếu nhiều score cùng vượt threshold.
+- Chưa có speech recognition hoặc chấm phát âm.
+- Nói chồng tiếng có thể làm embedding kém ổn định.
+- Nhiễu mạnh, tiếng vọng và khác biệt microphone có thể làm giảm similarity.
+- Threshold tối ưu thay đổi theo dữ liệu.
+- Model pretrained không đảm bảo độ chính xác như nhau cho mọi giọng, ngôn ngữ hoặc lứa tuổi; cần đánh giá trên dữ liệu mục tiêu.
+
+# Hướng phát triển
+
+Các hướng phù hợp sau MVP:
+
+- thay RMS gate bằng VAD và so sánh hiệu quả;
+- thử denoising/DSP như một nhánh thí nghiệm thay vì bắt buộc;
+- tự động chạy grid threshold và xuất Precision/Recall/F1;
+- thêm dynamic add/remove reference không giới hạn cố định ở UI;
+- thêm click segment để seek video trực tiếp đến timestamp tương ứng;
+- thêm best-speaker / ambiguity-margin mode như một nhánh thí nghiệm, tách biệt independent matching mặc định;
+- thêm lưu lịch sử thí nghiệm bằng SQLite nếu thực sự cần;
+- thêm module speech-to-text hoặc pronunciation assessment như chức năng độc lập, không trộn lẫn với speaker matching;
+- đánh giá fairness/robustness trên nhiều giọng, thiết bị và môi trường.
+
+# Kết luận
+
+**AI VOICE LOCATOR – ỨNG DỤNG AI TRONG ĐỊNH VỊ VÀ ĐỐI SÁNH GIỌNG NÓI TRONG GIÁO DỤC** là một đề tài có phạm vi vừa sức cho nghiên cứu khoa học cấp 2 nhưng vẫn thể hiện đầy đủ một pipeline AI thực tế: xử lý audio, speaker embedding, vector similarity, sliding window, threshold, visualization và đánh giá định lượng.
+
+Giá trị của đề tài không nằm ở việc chỉ gọi một pretrained model. Phần nghiên cứu nằm ở cách xây dựng quy trình định vị người nói, lựa chọn tham số, thiết kế ground truth, kiểm tra độ bền vững trong môi trường lớp học và diễn giải kết quả một cách an toàn.
+
+# Phụ lục: checklist bàn giao
+
+- [x] Source code chạy bằng `uv` + Poe.
+- [x] UI giáo dục với các use case cụ thể.
+- [x] Timeline + KPI + timestamp table.
+- [x] Unit tests cho audio/localization/similarity hiện có.
+- [x] Script tải CAM++ model.
+- [x] Script PyInstaller build Windows.
+- [x] Báo cáo QMD.
+- [x] Bản Word bàn giao.
+- [ ] Dữ liệu ground truth thực nghiệm thực tế.
+- [ ] Kết quả Precision/Recall/F1 chính thức sau khi thu thập dữ liệu.
+
+
+## Enhancement v0.3.1 — Seekable segments
+
+Bảng segment dưới timeline cho phép click một hàng để seek video/audio tới timestamp bắt đầu tương ứng. Cơ chế này chỉ điều khiển trình phát media và không thay đổi kết quả speaker matching.
+
+
+## Enhancement v0.3.2 — Native media seek trên Gradio 6
+
+Bản v0.3.2 nâng Gradio lên `6.28.0` và thay frontend JavaScript seek của v0.3.1 bằng thuộc tính `playback_position` native trên `gr.Audio` và `gr.Video`. `Dataframe.select` vẫn là interaction chính; khi người dùng chọn một detected segment, backend trả update property tới media player mà không thay đổi media value hoặc pipeline speaker localization. Dataframe cũng được migrate sang contract Gradio 6 (`column_count` và `row_count` dạng số thay cho tuple contract cũ).
