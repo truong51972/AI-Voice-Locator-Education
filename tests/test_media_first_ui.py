@@ -38,6 +38,7 @@ def test_workspace_uses_editor_splitters_without_page_scroll():
         assert len(window.reference_inputs) == 3
         assert window.segment_table.columnCount() == 4
         assert window.profile.currentData() == DEFAULT_PROFILE_KEY
+        assert not window.windowIcon().isNull()
     finally:
         window.close()
         app.processEvents()
