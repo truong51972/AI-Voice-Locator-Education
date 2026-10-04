@@ -9,6 +9,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = "voice-locator"
+ASSETS_DIR = ROOT / "assets"
+APP_ICON = ASSETS_DIR / "voice-locator.ico"
 
 
 def _package_dir(package: str) -> Path:
@@ -62,8 +64,20 @@ def _verify_models() -> None:
         raise SystemExit("Thiếu model. Chạy `poe models` trước khi build.\n  - " + pretty)
 
 
+def _verify_assets() -> None:
+    required = [
+        ASSETS_DIR / "voice-locator.png",
+        APP_ICON,
+    ]
+    missing = [path for path in required if not path.is_file()]
+    if missing:
+        pretty = "\n  - ".join(str(path) for path in missing)
+        raise SystemExit("Thiếu application icon assets:\n  - " + pretty)
+
+
 def main() -> None:
     _verify_models()
+    _verify_assets()
 
     sep = ";" if os.name == "nt" else ":"
     cmd = [
@@ -77,6 +91,8 @@ def main() -> None:
         str(ROOT / "src"),
         "--add-data",
         f"{ROOT / 'models'}{sep}models",
+        "--add-data",
+        f"{ASSETS_DIR}{sep}assets",
         "--collect-all",
         "sherpa_onnx",
         "--collect-all",
@@ -90,7 +106,12 @@ def main() -> None:
     bundled_ort_source: Path | None = None
     if os.name == "nt":
         bundled_ort_source = _find_windows_onnxruntime_dll()
-        cmd += ["--add-binary", f"{bundled_ort_source}{sep}sherpa_onnx/lib"]
+        cmd += [
+            "--add-binary",
+            f"{bundled_ort_source}{sep}sherpa_onnx/lib",
+            "--icon",
+            str(APP_ICON),
+        ]
 
     cmd.append(str(ROOT / "app.py"))
 
@@ -113,7 +134,11 @@ def main() -> None:
     internal_dir = dist_dir / "_internal"
     executable = dist_dir / (f"{APP_NAME}.exe" if os.name == "nt" else APP_NAME)
 
-    required_outputs = {"executable": executable}
+    required_outputs = {
+        "executable": executable,
+        "assets/voice-locator.png": internal_dir / "assets" / "voice-locator.png",
+        "assets/voice-locator.ico": internal_dir / "assets" / "voice-locator.ico",
+    }
     if os.name == "nt":
         required_outputs["sherpa_onnx/lib/onnxruntime.dll"] = (
             internal_dir / "sherpa_onnx" / "lib" / "onnxruntime.dll"
