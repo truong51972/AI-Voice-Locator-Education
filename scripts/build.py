@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = "voice-locator"
 ASSETS_DIR = ROOT / "assets"
 APP_ICON = ASSETS_DIR / "voice-locator.ico"
+APP_ENTRYPOINT = ROOT / "src" / "voice_locator" / "app.py"
 
 
 def _package_dir(package: str) -> Path:
@@ -55,7 +56,6 @@ def _is_wsl() -> bool:
 
 
 def _verify_models() -> None:
-    sys.path.insert(0, str(ROOT / "src"))
     from voice_locator.profiles import INFERENCE_PROFILES
 
     missing = [profile.model_path for profile in INFERENCE_PROFILES.values() if not profile.model_path.is_file()]
@@ -78,6 +78,9 @@ def _verify_assets() -> None:
 def main() -> None:
     _verify_models()
     _verify_assets()
+
+    if not APP_ENTRYPOINT.is_file():
+        raise SystemExit(f"Thiếu package entrypoint: {APP_ENTRYPOINT}")
 
     sep = ";" if os.name == "nt" else ":"
     cmd = [
@@ -113,7 +116,7 @@ def main() -> None:
             str(APP_ICON),
         ]
 
-    cmd.append(str(ROOT / "app.py"))
+    cmd.append(str(APP_ENTRYPOINT))
 
     system = platform.system()
     print(f"[build] Host platform: {system} ({platform.release()})")
