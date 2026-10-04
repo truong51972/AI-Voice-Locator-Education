@@ -15,12 +15,12 @@ from .config import (
     MIN_WINDOW_RMS,
     SAMPLE_RATE,
     SMOOTHING_KERNEL,
-    SPEAKER_MODEL,
     WINDOW_SECONDS,
 )
 from .embedding import SpeakerEmbedder
 from .localization import MatchSegment, WindowScore, merge_matches, score_references
 from .media import extract_audio_from_video
+from .profiles import DEFAULT_PROFILE_KEY, InferenceProfile, get_inference_profile
 from .visualization import (
     build_multi_speaker_timeline_figure,
     build_similarity_detail_figure,
@@ -56,9 +56,19 @@ class AnalysisBundle:
     segments_by_name: dict[str, list[MatchSegment]]
 
 
-@lru_cache(maxsize=1)
-def get_embedder() -> SpeakerEmbedder:
-    return SpeakerEmbedder(SPEAKER_MODEL, num_threads=2)
+@lru_cache(maxsize=4)
+def get_embedder(profile_key: str = DEFAULT_PROFILE_KEY) -> SpeakerEmbedder:
+    profile = get_inference_profile(profile_key)
+    return SpeakerEmbedder(profile.model_path, num_threads=profile.num_threads)
+
+
+def _resolve_profile_threshold(
+    profile_key: str,
+    threshold: float | None,
+) -> tuple[InferenceProfile, float]:
+    profile = get_inference_profile(profile_key)
+    resolved_threshold = profile.default_threshold if threshold is None else float(threshold)
+    return profile, resolved_threshold
 
 
 def _fmt_time(seconds: float) -> str:
@@ -121,6 +131,8 @@ def _compute_analysis(
     target_audio: GradioAudio,
     target_video,
     threshold: float,
+    *,
+    profile_key: str = DEFAULT_PROFILE_KEY,
 ) -> AnalysisBundle:
     prepared_refs = _validate_references(references)
     target, media_kind = _prepare_target(target_audio, target_video)
@@ -129,7 +141,7 @@ def _compute_analysis(
     scores_by_key = score_references(
         ref_samples,
         target,
-        get_embedder(),
+        get_embedder(profile_key),
         sample_rate=SAMPLE_RATE,
         window_seconds=WINDOW_SECONDS,
         hop_seconds=HOP_SECONDS,
@@ -229,7 +241,12 @@ def _build_segment_rows(results: list[SpeakerResult]) -> list[list[object]]:
     return rows
 
 
-def _build_result_note(bundle: AnalysisBundle, scenario: str, threshold: float) -> str:
+def _build_result_note(
+    bundle: AnalysisBundle,
+    scenario: str,
+    threshold: float,
+    profile: InferenceProfile,
+) -> str:
     safe_context = escape((scenario or "Hoạt động học tập").strip())
     media_label = "video" if bundle.media_kind == "video" else "audio"
     total_segments = sum(len(result.segments) for result in bundle.results)
@@ -242,7 +259,8 @@ def _build_result_note(bundle: AnalysisBundle, scenario: str, threshold: float) 
 
     return (
         f"{headline}  \n"
-        f"Bối cảnh: **{safe_context}** · Target: **{media_label}** · Threshold: **{float(threshold):.2f}**.  \n"
+        f"Bối cảnh: **{safe_context}** · Target: **{media_label}** · Profile: **{profile.label}** · "
+        f"Threshold: **{float(threshold):.2f}**.  \n"
         "Matching được thực hiện độc lập theo từng reference. Click một hàng segment để đưa player tới đúng timestamp."
     )
 
@@ -251,23 +269,31 @@ def analyze_workspace(
     references: Iterable[tuple[str, GradioAudio]],
     target_audio: GradioAudio,
     target_video,
-    threshold: float,
+    threshold: float | None,
     *,
     scenario: str = "Hoạt động học tập",
+    profile_key: str = DEFAULT_PROFILE_KEY,
 ):
     """Media-first UI contract introduced in v0.4.0."""
-    bundle = _compute_analysis(references, target_audio, target_video, threshold)
+    profile, resolved_threshold = _resolve_profile_threshold(profile_key, threshold)
+    bundle = _compute_analysis(
+        references,
+        target_audio,
+        target_video,
+        resolved_threshold,
+        profile_key=profile.key,
+    )
     lanes = build_speaker_lanes_figure(bundle.duration, bundle.segments_by_name)
     details = build_similarity_detail_figure(
         bundle.target,
         SAMPLE_RATE,
         bundle.scores_by_name,
-        float(threshold),
+        resolved_threshold,
     )
     return (
         lanes,
         details,
-        _build_result_note(bundle, scenario, threshold),
+        _build_result_note(bundle, scenario, resolved_threshold, profile),
         _build_kpis(bundle.results, bundle.duration, bundle.media_kind),
         _build_segment_rows(bundle.results),
     )
@@ -277,19 +303,27 @@ def analyze_many(
     references: Iterable[tuple[str, GradioAudio]],
     target_audio: GradioAudio,
     target_video,
-    threshold: float,
+    threshold: float | None,
     *,
     scenario: str = "Hoạt động học tập",
     include_segment_rows: bool = False,
+    profile_key: str = DEFAULT_PROFILE_KEY,
 ):
-    bundle = _compute_analysis(references, target_audio, target_video, threshold)
+    profile, resolved_threshold = _resolve_profile_threshold(profile_key, threshold)
+    bundle = _compute_analysis(
+        references,
+        target_audio,
+        target_video,
+        resolved_threshold,
+        profile_key=profile.key,
+    )
 
     figure = build_multi_speaker_timeline_figure(
         bundle.target,
         SAMPLE_RATE,
         bundle.scores_by_name,
         bundle.segments_by_name,
-        float(threshold),
+        resolved_threshold,
     )
     kpis = _build_kpis(bundle.results, bundle.duration, bundle.media_kind)
 
@@ -297,7 +331,8 @@ def analyze_many(
     media_label = "video" if bundle.media_kind == "video" else "audio"
     lines = [
         "### Kết quả định vị nhiều người nói",
-        f"Bối cảnh: **{safe_context}** · Target: **{media_label}** · Threshold: **{float(threshold):.2f}**",
+        f"Bối cảnh: **{safe_context}** · Target: **{media_label}** · Profile: **{profile.label}** · "
+        f"Threshold: **{resolved_threshold:.2f}**",
         "",
         "Mỗi người nói được đối sánh **độc lập** với cùng một tập target-window embeddings. "
         "Một khoảng thời gian có thể xuất hiện ở nhiều speaker nếu nhiều score cùng vượt threshold; đây không phải full speaker diarization.",
@@ -345,6 +380,7 @@ def analyze(
     *,
     speaker_label: str = "Người nói tham chiếu",
     scenario: str = "Hoạt động học tập",
+    profile_key: str = DEFAULT_PROFILE_KEY,
 ):
     """Backward-compatible v0.2.x API."""
     return analyze_many(
@@ -353,4 +389,5 @@ def analyze(
         None,
         threshold,
         scenario=scenario,
+        profile_key=profile_key,
     )

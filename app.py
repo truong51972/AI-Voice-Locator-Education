@@ -19,8 +19,8 @@ def main() -> None:
     configure_windows_native_runtime(strict=(sys.platform == "win32"))
 
     # Keep imports inside main so the packaged executable can provide a controlled
-    # smoke-test path. The smoke test constructs the UI and the speaker extractor,
-    # so both package-data and native ONNX Runtime problems fail the build early.
+    # smoke-test path. The smoke test constructs the UI and every configured
+    # speaker extractor, so package-data/native/model problems fail the build early.
     from voice_locator.ui import build_app
 
     app = build_app()
@@ -32,18 +32,21 @@ def main() -> None:
         import groovy  # noqa: F401
         import safehttpx  # noqa: F401
 
-        from voice_locator.config import SPEAKER_MODEL
         from voice_locator.embedding import SpeakerEmbedder
         from voice_locator.media import ffmpeg_executable
+        from voice_locator.profiles import INFERENCE_PROFILES
 
-        embedder = SpeakerEmbedder(SPEAKER_MODEL, num_threads=1)
         ort_path = selected_onnxruntime_path()
         if ort_path:
             print(f"[smoke] Bundled ONNX Runtime: {ort_path}")
+
+        for profile in INFERENCE_PROFILES.values():
+            embedder = SpeakerEmbedder(profile.model_path, num_threads=1)
+            print(f"[smoke] {profile.label}: extractor initialized, dim={embedder.dim}")
+
         ffmpeg_path = ffmpeg_executable()
-        print(f"[smoke] Speaker extractor initialized: dim={embedder.dim}")
         print(f"[smoke] Bundled FFmpeg: {ffmpeg_path}")
-        print("[smoke] UI + Gradio + FFmpeg + speaker runtime/model: OK")
+        print("[smoke] UI + Gradio + FFmpeg + all speaker profiles: OK")
         return
 
     # Intentionally use Gradio's native theme/layout with no custom CSS or JS.
