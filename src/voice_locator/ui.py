@@ -5,8 +5,8 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QThread, QUrl, Signal, Slot
-from PySide6.QtGui import QColor, QIcon, QPainter, QPen
+from PySide6.QtCore import QPoint, Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtGui import QColor, QIcon, QPainter, QPen, QPolygon
 from PySide6.QtMultimedia import (
     QAudioInput,
     QAudioOutput,
@@ -416,11 +416,13 @@ class EditorTimelineWidget(QWidget):
         painter.setBrush(QColor("#ff5d73"))
         painter.setPen(Qt.PenStyle.NoPen)
         painter.drawPolygon(
-            [
-                (playhead_x - 6, 8),
-                (playhead_x + 6, 8),
-                (playhead_x, 16),
-            ]
+            QPolygon(
+                [
+                    QPoint(playhead_x - 6, 8),
+                    QPoint(playhead_x + 6, 8),
+                    QPoint(playhead_x, 16),
+                ]
+            )
         )
 
         if self._bundle is None:
