@@ -56,6 +56,7 @@ SCENARIOS = [
 ]
 
 PROFILE_CHOICES = [(profile.label, profile.key) for profile in INFERENCE_PROFILES.values()]
+DEFAULT_REFERENCE_SPEAKERS = 1
 MAX_REFERENCE_SPEAKERS = 3
 SEGMENT_HEADERS = ["Người nói", "Bắt đầu", "Kết thúc", "Peak"]
 
@@ -512,7 +513,7 @@ class ReferenceInput(QGroupBox):
         layout.setVerticalSpacing(5)
 
         self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText(f"Học sinh {index}")
+        self.name_edit.setText(f"Speaker {index}")
         self.path_label = QLabel("Chưa có audio")
         self.path_label.setStyleSheet("color: #9aa1ab;")
         choose_button = QPushButton("📁 File")
@@ -751,17 +752,42 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(8, 8, 8, 8)
-        info = QLabel("Reference audio · 3–5 giây rõ tiếng")
+        info = QLabel(f"Reference audio · 3–5 giây rõ tiếng · tối đa {MAX_REFERENCE_SPEAKERS} speakers")
         info.setStyleSheet("color: #9da4ae;")
         layout.addWidget(info)
 
-        self.reference_inputs = [
-            ReferenceInput(index) for index in range(1, MAX_REFERENCE_SPEAKERS + 1)
-        ]
-        for reference in self.reference_inputs:
-            layout.addWidget(reference)
+        self.reference_inputs: list[ReferenceInput] = []
+        self.reference_list_layout = QVBoxLayout()
+        self.reference_list_layout.setContentsMargins(0, 0, 0, 0)
+        self.reference_list_layout.setSpacing(6)
+        layout.addLayout(self.reference_list_layout)
+
+        self.add_speaker_button = QPushButton("+ Add speaker")
+        self.add_speaker_button.clicked.connect(self._add_reference_input)
+        layout.addWidget(self.add_speaker_button)
         layout.addStretch(1)
+
+        for _ in range(DEFAULT_REFERENCE_SPEAKERS):
+            self._add_reference_input()
         return page
+
+    @Slot()
+    def _add_reference_input(self) -> None:
+        if len(self.reference_inputs) >= MAX_REFERENCE_SPEAKERS:
+            return
+
+        index = len(self.reference_inputs) + 1
+        reference = ReferenceInput(index)
+        self.reference_inputs.append(reference)
+        self.reference_list_layout.addWidget(reference)
+
+        reached_limit = len(self.reference_inputs) >= MAX_REFERENCE_SPEAKERS
+        self.add_speaker_button.setEnabled(not reached_limit)
+        self.add_speaker_button.setText(
+            f"Maximum {MAX_REFERENCE_SPEAKERS} speakers"
+            if reached_limit
+            else "+ Add speaker"
+        )
 
     def _build_analysis_panel(self) -> QWidget:
         page = QWidget()
