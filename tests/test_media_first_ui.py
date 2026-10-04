@@ -12,10 +12,16 @@ from voice_locator.audio import prepare_gradio_audio
 from voice_locator.localization import MatchSegment
 from voice_locator.pipeline import AnalysisBundle, SpeakerResult
 from voice_locator.profiles import DEFAULT_PROFILE_KEY, INFERENCE_PROFILES
-from voice_locator.ui import MAX_REFERENCE_SPEAKERS, build_app, create_application
+from voice_locator.ui import (
+    DEFAULT_REFERENCE_SPEAKERS,
+    MAX_REFERENCE_SPEAKERS,
+    build_app,
+    create_application,
+)
 
 
-def test_reference_limit_is_hard_capped_at_three():
+def test_reference_speaker_defaults_and_limit():
+    assert DEFAULT_REFERENCE_SPEAKERS == 1
     assert MAX_REFERENCE_SPEAKERS == 3
 
 
@@ -35,10 +41,38 @@ def test_workspace_uses_editor_splitters_without_page_scroll():
         assert window.root_splitter.orientation() == Qt.Orientation.Vertical
         assert window.workspace_splitter.orientation() == Qt.Orientation.Horizontal
         assert window.analysis_page.findChildren(QScrollArea) == []
-        assert len(window.reference_inputs) == 3
+        assert len(window.reference_inputs) == 1
+        assert window.reference_inputs[0].name_edit.text() == "Speaker 1"
         assert window.segment_table.columnCount() == 4
         assert window.profile.currentData() == DEFAULT_PROFILE_KEY
         assert not window.windowIcon().isNull()
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_reference_speakers_are_added_progressively_up_to_limit():
+    app = create_application([])
+    window = build_app()
+    try:
+        assert [item.name_edit.text() for item in window.reference_inputs] == ["Speaker 1"]
+        assert window.add_speaker_button.isEnabled()
+
+        window.add_speaker_button.click()
+        assert [item.name_edit.text() for item in window.reference_inputs] == [
+            "Speaker 1",
+            "Speaker 2",
+        ]
+        assert window.add_speaker_button.isEnabled()
+
+        window.add_speaker_button.click()
+        assert [item.name_edit.text() for item in window.reference_inputs] == [
+            "Speaker 1",
+            "Speaker 2",
+            "Speaker 3",
+        ]
+        assert not window.add_speaker_button.isEnabled()
+        assert window.add_speaker_button.text() == "Maximum 3 speakers"
     finally:
         window.close()
         app.processEvents()
