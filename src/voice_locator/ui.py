@@ -6,6 +6,7 @@ import gradio as gr
 
 from .config import DEFAULT_THRESHOLD
 from .pipeline import analyze_workspace
+from .profiles import DEFAULT_PROFILE_KEY, INFERENCE_PROFILES, get_inference_profile
 from .visualization import build_timeline_placeholder_figure
 
 
@@ -14,6 +15,11 @@ SCENARIOS = [
     "Tranh biện / thuyết trình",
     "Luyện nói / đọc thành tiếng",
     "Xem lại bản ghi hoạt động lớp học",
+]
+
+PROFILE_CHOICES = [
+    (profile.label, profile.key)
+    for profile in INFERENCE_PROFILES.values()
 ]
 
 MAX_REFERENCE_SPEAKERS = 3
@@ -73,6 +79,11 @@ def _switch_target_mode(mode: str):
     return gr.update(visible=True), gr.update(value=None, visible=False)
 
 
+def _apply_profile_defaults(profile_key: str):
+    profile = get_inference_profile(profile_key)
+    return gr.update(value=profile.default_threshold)
+
+
 def _readiness(*values):
     """Compatibility helper kept for tests and callers; UI validation happens on Analyze."""
     reference_values = values[: MAX_REFERENCE_SPEAKERS * 2]
@@ -113,7 +124,7 @@ def _placeholder_summary(note: str = "Kết quả theo từng reference sẽ xu�
 
 def _run_workspace(*values):
     reference_values = values[: MAX_REFERENCE_SPEAKERS * 2]
-    target_audio, target_video, threshold, scenario = values[MAX_REFERENCE_SPEAKERS * 2 :]
+    target_audio, target_video, profile_key, threshold, scenario = values[MAX_REFERENCE_SPEAKERS * 2 :]
     references = [
         (reference_values[i], reference_values[i + 1])
         for i in range(0, len(reference_values), 2)
@@ -126,6 +137,7 @@ def _run_workspace(*values):
             target_video,
             threshold,
             scenario=scenario,
+            profile_key=profile_key,
         )
         return (
             lanes,
@@ -142,14 +154,14 @@ def _run_workspace(*values):
         message = (
             "### Không thể chạy mô hình\n"
             f"{escape(str(exc))}\n\n"
-            "Nếu vừa cập nhật source, hãy chạy lại `uv sync --dev --refresh` và `uv run poe build`."
+            "Nếu vừa cập nhật source, hãy chạy lại `uv sync --dev --refresh`, `uv run poe models` và `uv run poe build`."
         )
 
     return (
         build_timeline_placeholder_figure(),
         None,
         message,
-        _placeholder_summary("Kiểm tra lại target và các reference speaker."),
+        _placeholder_summary("Kiểm tra lại target, inference profile và các reference speaker."),
         [],
         gr.update(visible=True),
         "",
@@ -221,13 +233,20 @@ def build_app() -> gr.Blocks:
                         value=SCENARIOS[0],
                         label="Bối cảnh giáo dục",
                     )
+                    profile = gr.Radio(
+                        choices=PROFILE_CHOICES,
+                        value=DEFAULT_PROFILE_KEY,
+                        type="value",
+                        label="Độ chính xác",
+                        info="Nhanh dùng CAM++; Chính xác dùng ERes2NetV2 lớn hơn và sẽ chậm hơn trên CPU.",
+                    )
                     threshold = gr.Slider(
                         minimum=0.20,
                         maximum=0.90,
                         value=DEFAULT_THRESHOLD,
                         step=0.01,
                         label="Similarity threshold",
-                        info="Một threshold dùng chung cho mọi reference speaker.",
+                        info="Threshold được giữ riêng theo profile; các giá trị tối ưu cần calibration trên dữ liệu thực tế.",
                     )
 
                 gr.Markdown("Cần **1 target** và ít nhất **1 reference speaker** có cả tên + audio.")
@@ -271,9 +290,16 @@ def build_app() -> gr.Blocks:
                     queue=False,
                 )
 
+                profile.change(
+                    _apply_profile_defaults,
+                    inputs=[profile],
+                    outputs=[threshold],
+                    queue=False,
+                )
+
                 analyze_btn.click(
                     _run_workspace,
-                    inputs=[*reference_components, target_audio, target_video, threshold, scenario],
+                    inputs=[*reference_components, target_audio, target_video, profile, threshold, scenario],
                     outputs=[
                         lane_plot,
                         detail_plot,
@@ -321,9 +347,10 @@ def build_app() -> gr.Blocks:
                     1. Chọn video/audio target.
                     2. Mở **Reference speakers**, đặt tên và record/upload 3–5 giây giọng rõ cho từng người.
                     3. Có thể đóng Accordion reference sau khi chuẩn bị xong để tiết kiệm không gian.
-                    4. Chạy **Analyze voices**.
-                    5. Xem speaker timeline và click một segment để seek player tới timestamp tương ứng.
-                    6. Chỉ mở **Research details** khi cần xem waveform/similarity để calibration.
+                    4. Chọn **Độ chính xác**: Nhanh cho vòng thử nghiệm, Chính xác khi cần model embedding lớn hơn.
+                    5. Chạy **Analyze voices**.
+                    6. Xem speaker timeline và click một segment để seek player tới timestamp tương ứng.
+                    7. Chỉ mở **Research details** khi cần xem waveform/similarity để calibration.
 
                     ### Quyền riêng tư & cách diễn giải
                     - Chỉ thu âm/video khi người tham gia và giáo viên/phụ huynh đã đồng ý theo quy định áp dụng.
