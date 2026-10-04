@@ -1,6 +1,6 @@
 [project]
 name = "voice-locator"
-version = "0.5.0"
+version = "0.5.1"
 description = "AI voice matching and speaker localization for middle-school educational activities"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
