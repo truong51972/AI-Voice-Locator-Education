@@ -5,10 +5,12 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import numpy as np
 import soundfile as sf
-from PySide6.QtMultimediaWidgets import QVideoWidget
-from PySide6.QtWidgets import QMainWindow
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QMainWindow, QScrollArea
 
 from voice_locator.audio import prepare_gradio_audio
+from voice_locator.localization import MatchSegment
+from voice_locator.pipeline import AnalysisBundle, SpeakerResult
 from voice_locator.profiles import DEFAULT_PROFILE_KEY, INFERENCE_PROFILES
 from voice_locator.ui import MAX_REFERENCE_SPEAKERS, build_app, create_application
 
@@ -25,15 +27,51 @@ def test_prepare_audio_filepath_contract_is_preserved(tmp_path: Path):
     assert samples.shape == (16_000,)
 
 
-def test_desktop_window_uses_native_qt_media_and_three_references():
+def test_workspace_uses_editor_splitters_without_page_scroll():
     app = create_application([])
     window = build_app()
     try:
         assert isinstance(window, QMainWindow)
-        assert isinstance(window.video_widget, QVideoWidget)
+        assert window.root_splitter.orientation() == Qt.Orientation.Vertical
+        assert window.workspace_splitter.orientation() == Qt.Orientation.Horizontal
+        assert window.analysis_page.findChildren(QScrollArea) == []
         assert len(window.reference_inputs) == 3
+        assert window.segment_table.columnCount() == 4
         assert window.profile.currentData() == DEFAULT_PROFILE_KEY
-        assert window.segment_table.columnCount() == 7
+    finally:
+        window.close()
+        app.processEvents()
+
+
+def test_preview_overlay_tracks_active_speaker_segment():
+    app = create_application([])
+    window = build_app()
+    try:
+        segment = MatchSegment(start=1.0, end=3.0, avg_score=0.72, max_score=0.84)
+        result = SpeakerResult(
+            key="spk_01",
+            name="Học sinh A",
+            scores=[],
+            segments=[segment],
+            matched_duration=2.0,
+            coverage=20.0,
+            max_score=0.84,
+        )
+        bundle = AnalysisBundle(
+            target=np.zeros(16_000, dtype=np.float32),
+            media_kind="video",
+            duration=10.0,
+            results=[result],
+            scores_by_name={"Học sinh A": []},
+            segments_by_name={"Học sinh A": [segment]},
+        )
+        window.video_widget.overlay.set_bundle(bundle)
+        window.video_widget.overlay.set_position(2.0)
+        active = window.video_widget.overlay._active_results()
+        assert len(active) == 1
+        assert active[0][0].name == "Học sinh A"
+        window.video_widget.overlay.set_position(5.0)
+        assert window.video_widget.overlay._active_results() == []
     finally:
         window.close()
         app.processEvents()
