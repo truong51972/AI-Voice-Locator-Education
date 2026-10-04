@@ -1,13 +1,50 @@
 from __future__ import annotations
 
-from html import escape
+import sys
+import tempfile
+import uuid
+from pathlib import Path
 
-import gradio as gr
+from PySide6.QtCore import Qt, QThread, QUrl, Signal, Slot
+from PySide6.QtGui import QPainter, QPen
+from PySide6.QtMultimedia import (
+    QAudioInput,
+    QAudioOutput,
+    QMediaCaptureSession,
+    QMediaFormat,
+    QMediaPlayer,
+    QMediaRecorder,
+)
+from PySide6.QtMultimediaWidgets import QVideoWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QComboBox,
+    QDoubleSpinBox,
+    QFileDialog,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
+    QSlider,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .config import DEFAULT_THRESHOLD
-from .pipeline import analyze_workspace
+from .pipeline import AnalysisBundle
 from .profiles import DEFAULT_PROFILE_KEY, INFERENCE_PROFILES, get_inference_profile
-from .visualization import build_timeline_placeholder_figure
+from .service import analyze_bundle
 
 
 SCENARIOS = [
@@ -17,13 +54,8 @@ SCENARIOS = [
     "Xem lại bản ghi hoạt động lớp học",
 ]
 
-PROFILE_CHOICES = [
-    (profile.label, profile.key)
-    for profile in INFERENCE_PROFILES.values()
-]
-
+PROFILE_CHOICES = [(profile.label, profile.key) for profile in INFERENCE_PROFILES.values()]
 MAX_REFERENCE_SPEAKERS = 3
-
 SEGMENT_HEADERS = [
     "Người nói",
     "Đoạn",
@@ -33,6 +65,15 @@ SEGMENT_HEADERS = [
     "Similarity TB",
     "Cao nhất",
 ]
+
+
+def _fmt_time(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    minutes = int(seconds // 60)
+    remain = seconds - minutes * 60
+    if minutes:
+        return f"{minutes:02d}:{remain:04.1f}"
+    return f"{remain:.1f}s"
 
 
 def _parse_timecode(value: object) -> float:
@@ -47,320 +88,570 @@ def _parse_timecode(value: object) -> float:
     return float(text)
 
 
-def _select_segment(evt: gr.SelectData):
-    """Seek the single target media player using Gradio native playback_position."""
-    if not getattr(evt, "selected", True):
-        no_seek = gr.update()
-        return no_seek, no_seek, ""
+class AnalysisWorker(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
 
-    row = getattr(evt, "row_value", None)
-    if not row or len(row) < 4:
-        no_seek = gr.update()
-        return no_seek, no_seek, "Không đọc được đoạn đã chọn."
+    def __init__(
+        self,
+        references,
+        target_audio,
+        target_video,
+        threshold: float,
+        scenario: str,
+        profile_key: str,
+    ):
+        super().__init__()
+        self._references = references
+        self._target_audio = target_audio
+        self._target_video = target_video
+        self._threshold = threshold
+        self._scenario = scenario
+        self._profile_key = profile_key
 
-    try:
-        start = _parse_timecode(row[2])
-    except (TypeError, ValueError):
-        no_seek = gr.update()
-        return no_seek, no_seek, "Timestamp của đoạn không hợp lệ."
-
-    speaker = str(row[0])
-    segment_no = str(row[1])
-    start_label = str(row[2])
-    end_label = str(row[3])
-    seek_update = gr.update(playback_position=start)
-    status = f"▶ **{speaker} · đoạn {segment_no}** — {start_label} → {end_label}"
-    return seek_update, seek_update.copy(), status
-
-
-def _switch_target_mode(mode: str):
-    if mode == "audio":
-        return gr.update(value=None, visible=False), gr.update(visible=True)
-    return gr.update(visible=True), gr.update(value=None, visible=False)
-
-
-def _apply_profile_defaults(profile_key: str):
-    profile = get_inference_profile(profile_key)
-    return gr.update(value=profile.default_threshold)
-
-
-def _readiness(*values):
-    """Compatibility helper kept for tests and callers; UI validation happens on Analyze."""
-    reference_values = values[: MAX_REFERENCE_SPEAKERS * 2]
-    target_audio, target_video = values[MAX_REFERENCE_SPEAKERS * 2 :]
-
-    ready_refs = 0
-    partial_refs = 0
-    for idx in range(MAX_REFERENCE_SPEAKERS):
-        name = (reference_values[idx * 2] or "").strip()
-        audio = reference_values[idx * 2 + 1]
-        if name and audio is not None:
-            ready_refs += 1
-        elif name or audio is not None:
-            partial_refs += 1
-
-    has_target = target_audio is not None or target_video is not None
-    both_targets = target_audio is not None and target_video is not None
-
-    parts = [f"Target: {'ready' if has_target and not both_targets else 'cần chọn'}", f"References: {ready_refs}/{MAX_REFERENCE_SPEAKERS}"]
-    if partial_refs:
-        parts.append(f"{partial_refs} reference chưa hoàn chỉnh")
-    if both_targets:
-        parts.append("chỉ dùng một audio/video target")
-
-    button_label = f"Analyze {ready_refs} speaker{'s' if ready_refs != 1 else ''}" if ready_refs else "Analyze voices"
-    return " · ".join(parts), gr.update(interactive=True, value=button_label)
+    def run(self) -> None:
+        try:
+            bundle, resolved_threshold = analyze_bundle(
+                self._references,
+                self._target_audio,
+                self._target_video,
+                self._threshold,
+                profile_key=self._profile_key,
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+            return
+        self.completed.emit(
+            (bundle, resolved_threshold, self._scenario, self._profile_key)
+        )
 
 
-def _placeholder_summary(note: str = "Kết quả theo từng reference sẽ xuất hiện ở đây.") -> str:
-    return (
-        "<div>"
-        "<strong>—</strong> references · <strong>—</strong> detected · "
-        "<strong>—</strong> matches · <strong>—</strong> target"
-        f"<br><small>{escape(note)}</small>"
-        "</div>"
-    )
+class SpeakerTimelineWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._bundle: AnalysisBundle | None = None
+        self.setMinimumHeight(180)
+
+    def set_bundle(self, bundle: AnalysisBundle | None) -> None:
+        self._bundle = bundle
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect().adjusted(110, 18, -18, -24)
+        painter.setPen(self.palette().text().color())
+
+        if self._bundle is None or not self._bundle.results:
+            painter.drawText(
+                self.rect(),
+                Qt.AlignmentFlag.AlignCenter,
+                "Speaker timeline sẽ xuất hiện sau khi phân tích",
+            )
+            return
+
+        duration = max(self._bundle.duration, 0.001)
+        lane_height = max(24, rect.height() // max(1, len(self._bundle.results)))
+        base_pen = QPen(self.palette().mid().color())
+        segment_pen = QPen(self.palette().highlight().color())
+        segment_pen.setWidth(8)
+
+        for index, result in enumerate(self._bundle.results):
+            y = rect.top() + lane_height * index + lane_height // 2
+            painter.setPen(self.palette().text().color())
+            painter.drawText(8, y + 5, result.name)
+            painter.setPen(base_pen)
+            painter.drawLine(rect.left(), y, rect.right(), y)
+            painter.setPen(segment_pen)
+            for segment in result.segments:
+                x1 = rect.left() + int(rect.width() * segment.start / duration)
+                x2 = rect.left() + int(rect.width() * segment.end / duration)
+                painter.drawLine(x1, y, max(x1 + 2, x2), y)
+
+        painter.setPen(self.palette().text().color())
+        painter.drawText(rect.left(), self.height() - 6, "0s")
+        painter.drawText(rect.right() - 70, self.height() - 6, _fmt_time(duration))
 
 
-def _run_workspace(*values):
-    reference_values = values[: MAX_REFERENCE_SPEAKERS * 2]
-    target_audio, target_video, profile_key, threshold, scenario = values[MAX_REFERENCE_SPEAKERS * 2 :]
-    references = [
-        (reference_values[i], reference_values[i + 1])
-        for i in range(0, len(reference_values), 2)
-    ]
+class SimilarityPlotWidget(QWidget):
+    def __init__(self, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._bundle: AnalysisBundle | None = None
+        self._threshold = DEFAULT_THRESHOLD
+        self.setMinimumHeight(220)
 
-    try:
-        lanes, details, note, summary, rows = analyze_workspace(
+    def set_bundle(self, bundle: AnalysisBundle | None, threshold: float) -> None:
+        self._bundle = bundle
+        self._threshold = threshold
+        self.update()
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt API
+        super().paintEvent(event)
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = self.rect().adjusted(52, 18, -18, -30)
+
+        if self._bundle is None or not self._bundle.results:
+            painter.drawText(
+                self.rect(), Qt.AlignmentFlag.AlignCenter, "Similarity diagnostics"
+            )
+            return
+
+        duration = max(self._bundle.duration, 0.001)
+        painter.setPen(QPen(self.palette().mid().color()))
+        painter.drawRect(rect)
+
+        threshold_y = rect.bottom() - int(rect.height() * self._threshold)
+        threshold_pen = QPen(self.palette().link().color())
+        threshold_pen.setStyle(Qt.PenStyle.DashLine)
+        painter.setPen(threshold_pen)
+        painter.drawLine(rect.left(), threshold_y, rect.right(), threshold_y)
+
+        colors = [
+            self.palette().highlight().color(),
+            self.palette().link().color(),
+            self.palette().text().color(),
+        ]
+        for index, result in enumerate(self._bundle.results):
+            if not result.scores:
+                continue
+            pen = QPen(colors[index % len(colors)])
+            pen.setWidth(2)
+            painter.setPen(pen)
+            previous = None
+            for score in result.scores:
+                center = (score.start + score.end) / 2.0
+                x = rect.left() + int(rect.width() * center / duration)
+                normalized = max(0.0, min(1.0, float(score.score)))
+                y = rect.bottom() - int(rect.height() * normalized)
+                if previous is not None:
+                    painter.drawLine(previous[0], previous[1], x, y)
+                previous = (x, y)
+
+        painter.setPen(self.palette().text().color())
+        painter.drawText(8, rect.top() + 5, "1.0")
+        painter.drawText(8, rect.bottom(), "0.0")
+        painter.drawText(rect.left(), self.height() - 8, "Similarity theo thời gian")
+
+
+class ReferenceInput(QGroupBox):
+    def __init__(self, index: int, parent: QWidget | None = None):
+        super().__init__(f"Speaker {index}", parent)
+        self.audio_path: str | None = None
+        self._record_path: str | None = None
+        self._audio_input: QAudioInput | None = None
+        self._recorder: QMediaRecorder | None = None
+        self._capture_session: QMediaCaptureSession | None = None
+
+        layout = QGridLayout(self)
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText(f"Ví dụ: Học sinh {index}")
+        self.path_label = QLabel("Chưa chọn audio")
+        self.path_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        choose_button = QPushButton("Chọn audio")
+        self.record_button = QPushButton("Ghi âm")
+        clear_button = QPushButton("Xóa")
+
+        choose_button.clicked.connect(self._choose_audio)
+        self.record_button.clicked.connect(self._toggle_recording)
+        clear_button.clicked.connect(self.clear)
+
+        layout.addWidget(QLabel("Tên"), 0, 0)
+        layout.addWidget(self.name_edit, 0, 1, 1, 3)
+        layout.addWidget(self.path_label, 1, 0, 1, 4)
+        layout.addWidget(choose_button, 2, 1)
+        layout.addWidget(self.record_button, 2, 2)
+        layout.addWidget(clear_button, 2, 3)
+
+    def value(self) -> tuple[str, str | None]:
+        return self.name_edit.text().strip(), self.audio_path
+
+    @Slot()
+    def clear(self) -> None:
+        if (
+            self._recorder
+            and self._recorder.recorderState()
+            == QMediaRecorder.RecorderState.RecordingState
+        ):
+            self._recorder.stop()
+        self.audio_path = None
+        self.path_label.setText("Chưa chọn audio")
+        self.record_button.setText("Ghi âm")
+
+    @Slot()
+    def _choose_audio(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Chọn reference audio",
+            "",
+            "Audio (*.wav *.flac *.ogg *.mp3 *.m4a);;Tất cả file (*)",
+        )
+        if path:
+            self.audio_path = path
+            self.path_label.setText(Path(path).name)
+
+    @Slot()
+    def _toggle_recording(self) -> None:
+        if (
+            self._recorder
+            and self._recorder.recorderState()
+            == QMediaRecorder.RecorderState.RecordingState
+        ):
+            self._recorder.stop()
+            self.record_button.setText("Ghi âm")
+            if self._record_path:
+                self.audio_path = self._record_path
+                self.path_label.setText(Path(self._record_path).name)
+            return
+
+        record_path = str(
+            Path(tempfile.gettempdir())
+            / f"voice-locator-ref-{uuid.uuid4().hex}.wav"
+        )
+        audio_input = QAudioInput(self)
+        recorder = QMediaRecorder(self)
+        capture_session = QMediaCaptureSession(self)
+        capture_session.setAudioInput(audio_input)
+        capture_session.setRecorder(recorder)
+
+        media_format = QMediaFormat()
+        media_format.setFileFormat(QMediaFormat.FileFormat.Wave)
+        recorder.setMediaFormat(media_format)
+        recorder.setOutputLocation(QUrl.fromLocalFile(record_path))
+        recorder.errorOccurred.connect(
+            lambda _error, message: self._recording_error(message)
+        )
+
+        self._audio_input = audio_input
+        self._recorder = recorder
+        self._capture_session = capture_session
+        self._record_path = record_path
+        recorder.record()
+        self.record_button.setText("Dừng ghi")
+        self.path_label.setText("Đang ghi âm…")
+
+    def _recording_error(self, message: str) -> None:
+        self.record_button.setText("Ghi âm")
+        QMessageBox.warning(
+            self,
+            "Không thể ghi âm",
+            message or "Qt Multimedia không thể mở microphone.",
+        )
+
+
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("AI Voice Locator · Giáo dục")
+        self.resize(1180, 820)
+        self._target_path: str | None = None
+        self._worker: AnalysisWorker | None = None
+        self._bundle: AnalysisBundle | None = None
+
+        self._player = QMediaPlayer(self)
+        self._audio_output = QAudioOutput(self)
+        self._player.setAudioOutput(self._audio_output)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._build_analysis_tab(), "🎯 Phân tích")
+        tabs.addTab(self._build_education_tab(), "🏫 Ứng dụng trong giáo dục")
+        tabs.addTab(self._build_privacy_tab(), "🛡️ Hướng dẫn & quyền riêng tư")
+        self.setCentralWidget(tabs)
+
+    def _build_analysis_tab(self) -> QWidget:
+        page = QWidget()
+        page_layout = QVBoxLayout(page)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        content = QWidget()
+        root = QVBoxLayout(content)
+        scroll.setWidget(content)
+        page_layout.addWidget(scroll)
+
+        root.addWidget(
+            QLabel(
+                "<h1>AI Voice Locator</h1>"
+                "<b>Known-speaker localization cho audio/video giáo dục.</b>"
+            )
+        )
+
+        media_group = QGroupBox("1. Target media")
+        media_layout = QVBoxLayout(media_group)
+        controls = QHBoxLayout()
+        self.target_mode = QComboBox()
+        self.target_mode.addItem("🎬 Video", "video")
+        self.target_mode.addItem("🎵 Audio", "audio")
+        choose_target = QPushButton("Chọn target")
+        choose_target.clicked.connect(self._choose_target)
+        self.target_label = QLabel("Chưa chọn target")
+        controls.addWidget(self.target_mode)
+        controls.addWidget(choose_target)
+        controls.addWidget(self.target_label, 1)
+        media_layout.addLayout(controls)
+
+        self.video_widget = QVideoWidget()
+        self.video_widget.setMinimumHeight(300)
+        self._player.setVideoOutput(self.video_widget)
+        media_layout.addWidget(self.video_widget)
+
+        player_controls = QHBoxLayout()
+        play_button = QPushButton("Play / Pause")
+        play_button.clicked.connect(self._toggle_playback)
+        self.position_slider = QSlider(Qt.Orientation.Horizontal)
+        self.position_slider.setRange(0, 0)
+        self.position_slider.sliderMoved.connect(self._player.setPosition)
+        self._player.positionChanged.connect(self.position_slider.setValue)
+        self._player.durationChanged.connect(
+            lambda duration: self.position_slider.setRange(0, max(0, duration))
+        )
+        player_controls.addWidget(play_button)
+        player_controls.addWidget(self.position_slider, 1)
+        media_layout.addLayout(player_controls)
+        root.addWidget(media_group)
+
+        refs_group = QGroupBox(
+            f"2. Reference speakers · tối đa {MAX_REFERENCE_SPEAKERS}"
+        )
+        refs_layout = QVBoxLayout(refs_group)
+        refs_layout.addWidget(
+            QLabel(
+                "Khuyến nghị mỗi mẫu dài 3–5 giây, rõ tiếng. "
+                "Có thể upload hoặc ghi trực tiếp bằng microphone."
+            )
+        )
+        self.reference_inputs = [
+            ReferenceInput(index) for index in range(1, MAX_REFERENCE_SPEAKERS + 1)
+        ]
+        for reference in self.reference_inputs:
+            refs_layout.addWidget(reference)
+        root.addWidget(refs_group)
+
+        settings_group = QGroupBox("3. Analysis settings")
+        form = QFormLayout(settings_group)
+        self.scenario = QComboBox()
+        self.scenario.addItems(SCENARIOS)
+        self.profile = QComboBox()
+        for label, key in PROFILE_CHOICES:
+            self.profile.addItem(label, key)
+        self.profile.setCurrentIndex(max(0, self.profile.findData(DEFAULT_PROFILE_KEY)))
+        self.profile.currentIndexChanged.connect(self._apply_profile_default)
+        self.profile_help = QLabel(get_inference_profile(DEFAULT_PROFILE_KEY).description)
+        self.profile_help.setWordWrap(True)
+        self.threshold = QDoubleSpinBox()
+        self.threshold.setRange(0.20, 0.90)
+        self.threshold.setDecimals(2)
+        self.threshold.setSingleStep(0.01)
+        self.threshold.setValue(DEFAULT_THRESHOLD)
+        form.addRow("Bối cảnh giáo dục", self.scenario)
+        form.addRow("Độ chính xác", self.profile)
+        form.addRow("", self.profile_help)
+        form.addRow("Similarity threshold", self.threshold)
+        root.addWidget(settings_group)
+
+        self.analyze_button = QPushButton("Analyze voices")
+        self.analyze_button.clicked.connect(self._start_analysis)
+        root.addWidget(self.analyze_button)
+
+        self.summary_label = QLabel("Kết quả sẽ xuất hiện ở đây.")
+        self.summary_label.setWordWrap(True)
+        root.addWidget(self.summary_label)
+
+        self.timeline = SpeakerTimelineWidget()
+        root.addWidget(self.timeline)
+
+        self.segment_table = QTableWidget(0, len(SEGMENT_HEADERS))
+        self.segment_table.setHorizontalHeaderLabels(SEGMENT_HEADERS)
+        self.segment_table.horizontalHeader().setSectionResizeMode(
+            QHeaderView.ResizeMode.Stretch
+        )
+        self.segment_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.segment_table.cellClicked.connect(self._seek_segment)
+        root.addWidget(self.segment_table)
+
+        detail_group = QGroupBox("Research details · similarity")
+        detail_layout = QVBoxLayout(detail_group)
+        self.similarity_plot = SimilarityPlotWidget()
+        detail_layout.addWidget(self.similarity_plot)
+        detail_layout.addWidget(
+            QLabel(
+                "Similarity là tín hiệu đối sánh, không phải xác nhận danh tính tuyệt đối."
+            )
+        )
+        root.addWidget(detail_group)
+        return page
+
+    def _build_education_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        browser = QTextBrowser()
+        browser.setHtml(
+            """
+            <h2>Các tình huống sử dụng</h2>
+            <p><b>Thảo luận nhóm:</b> đăng ký vài thành viên bằng mẫu giọng, rồi tìm vị trí từng người trong audio/video.</p>
+            <p><b>Tranh biện / thuyết trình:</b> tìm nhanh phần phát biểu của nhiều học sinh trong cùng một bản ghi.</p>
+            <p><b>Luyện nói / đọc thành tiếng:</b> đối sánh các mẫu giọng đã biết với recording chung để hỗ trợ xem lại.</p>
+            <p><b>Video hoạt động lớp học:</b> audio track được tách cục bộ và trả timeline theo timestamp.</p>
+            <p><b>Giới hạn:</b> đây là known-speaker localization, không phải full speaker diarization hay hệ thống xác nhận danh tính.</p>
+            """
+        )
+        layout.addWidget(browser)
+        return page
+
+    def _build_privacy_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        browser = QTextBrowser()
+        browser.setHtml(
+            """
+            <h2>Hướng dẫn & quyền riêng tư</h2>
+            <ol>
+              <li>Chọn video/audio target.</li>
+              <li>Đặt tên và upload/ghi 3–5 giây giọng rõ cho từng reference speaker.</li>
+              <li>Chọn profile Nhanh hoặc Chính xác.</li>
+              <li>Chạy Analyze voices.</li>
+              <li>Click một segment để seek player tới timestamp tương ứng.</li>
+            </ol>
+            <p>Chỉ thu âm/video khi người tham gia và giáo viên/phụ huynh đã đồng ý theo quy định áp dụng.</p>
+            <p>Matching là tín hiệu hỗ trợ tìm đoạn cần xem lại, không phải xác nhận danh tính tuyệt đối.</p>
+            <p>Audio/video được xử lý cục bộ; ứng dụng không cần gửi media lên dịch vụ speech-to-text hoặc cloud AI.</p>
+            """
+        )
+        layout.addWidget(browser)
+        return page
+
+    @Slot()
+    def _apply_profile_default(self) -> None:
+        profile = get_inference_profile(str(self.profile.currentData()))
+        self.threshold.setValue(profile.default_threshold)
+        self.profile_help.setText(profile.description)
+
+    @Slot()
+    def _choose_target(self) -> None:
+        is_video = self.target_mode.currentData() == "video"
+        file_filter = (
+            "Video (*.mp4 *.mov *.mkv *.avi *.webm);;Tất cả file (*)"
+            if is_video
+            else "Audio (*.wav *.flac *.ogg *.mp3 *.m4a);;Tất cả file (*)"
+        )
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Chọn target media", "", file_filter
+        )
+        if not path:
+            return
+        self._target_path = path
+        self.target_label.setText(Path(path).name)
+        self._player.setSource(QUrl.fromLocalFile(path))
+
+    @Slot()
+    def _toggle_playback(self) -> None:
+        if self._player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self._player.pause()
+        else:
+            self._player.play()
+
+    @Slot()
+    def _start_analysis(self) -> None:
+        if self._worker and self._worker.isRunning():
+            return
+
+        references = [reference.value() for reference in self.reference_inputs]
+        is_video = self.target_mode.currentData() == "video"
+        target_audio = None if is_video else self._target_path
+        target_video = self._target_path if is_video else None
+        threshold = self.threshold.value()
+        profile_key = str(self.profile.currentData())
+
+        self.analyze_button.setEnabled(False)
+        self.analyze_button.setText("Đang phân tích…")
+        self.summary_label.setText(
+            "Đang chạy speaker embedding và đối sánh các target windows…"
+        )
+        self._worker = AnalysisWorker(
             references,
             target_audio,
             target_video,
             threshold,
-            scenario=scenario,
-            profile_key=profile_key,
+            self.scenario.currentText(),
+            profile_key,
         )
-        return (
-            lanes,
-            details,
-            note,
-            summary,
-            rows,
-            gr.update(visible=True),
-            "",
+        self._worker.completed.connect(self._analysis_complete)
+        self._worker.failed.connect(self._analysis_failed)
+        self._worker.finished.connect(self._analysis_finished)
+        self._worker.start()
+
+    @Slot(object)
+    def _analysis_complete(self, payload: object) -> None:
+        bundle, resolved_threshold, scenario, profile_key = payload
+        self._bundle = bundle
+        detected = sum(1 for result in bundle.results if result.segments)
+        total_segments = sum(len(result.segments) for result in bundle.results)
+        profile = get_inference_profile(profile_key)
+        self.summary_label.setText(
+            f"{len(bundle.results)} references · {detected} detected · "
+            f"{total_segments} matches · {_fmt_time(bundle.duration)} {bundle.media_kind} · "
+            f"{profile.label} · threshold {resolved_threshold:.2f} · {scenario}"
         )
-    except ValueError as exc:
-        message = f"### Dữ liệu chưa hợp lệ\n{escape(str(exc))}"
-    except Exception as exc:
-        message = (
-            "### Không thể chạy mô hình\n"
-            f"{escape(str(exc))}\n\n"
-            "Nếu vừa cập nhật source, hãy chạy lại `uv sync --dev --refresh`, `uv run poe models` và `uv run poe build`."
+        self.timeline.set_bundle(bundle)
+        self.similarity_plot.set_bundle(bundle, resolved_threshold)
+        self._populate_segments(bundle)
+
+    @Slot(str)
+    def _analysis_failed(self, message: str) -> None:
+        self.summary_label.setText(
+            "Không thể chạy mô hình. Kiểm tra lại target và reference audio."
         )
+        QMessageBox.warning(self, "Không thể phân tích", message)
 
-    return (
-        build_timeline_placeholder_figure(),
-        None,
-        message,
-        _placeholder_summary("Kiểm tra lại target, inference profile và các reference speaker."),
-        [],
-        gr.update(visible=True),
-        "",
-    )
+    @Slot()
+    def _analysis_finished(self) -> None:
+        self.analyze_button.setEnabled(True)
+        self.analyze_button.setText("Analyze voices")
 
-
-def _reference_input(index: int):
-    """Build one plain Gradio reference input with no custom layout/CSS hooks."""
-    with gr.Group():
-        gr.Markdown(f"#### Speaker {index}")
-        name = gr.Textbox(
-            label="Tên speaker",
-            placeholder=f"Ví dụ: Học sinh {index}",
-        )
-        audio = gr.Audio(
-            sources=["upload", "microphone"],
-            type="filepath",
-            format="wav",
-            editable=False,
-            waveform_options=gr.WaveformOptions(show_recording_waveform=False),
-            label="Reference audio",
-        )
-    return name, audio
-
-
-def build_app() -> gr.Blocks:
-    with gr.Blocks(title="AI Voice Locator · Giáo dục", analytics_enabled=False) as demo:
-        gr.Markdown(
-            """
-            # AI Voice Locator
-            **Known-speaker localization cho audio/video giáo dục.** Ứng dụng chạy local và không cần speech-to-text.
-            """
-        )
-
-        with gr.Tabs():
-            with gr.Tab("🎯 Phân tích"):
-                gr.Markdown("## 1. Target media")
-                target_mode = gr.Radio(
-                    choices=[("🎬 Video", "video"), ("🎵 Audio", "audio")],
-                    value="video",
-                    type="value",
-                    label="Loại target",
+    def _populate_segments(self, bundle: AnalysisBundle) -> None:
+        rows = []
+        for result in bundle.results:
+            for index, segment in enumerate(result.segments, start=1):
+                rows.append(
+                    [
+                        result.name,
+                        str(index),
+                        _fmt_time(segment.start),
+                        _fmt_time(segment.end),
+                        _fmt_time(segment.end - segment.start),
+                        f"{segment.avg_score:.3f}",
+                        f"{segment.max_score:.3f}",
+                    ]
                 )
 
-                target_video = gr.Video(
-                    sources=["upload"],
-                    height=400,
-                    label="Video cần phân tích",
-                )
-                target_audio = gr.Audio(
-                    sources=["upload"],
-                    type="numpy",
-                    label="Audio cần phân tích",
-                    visible=False,
+        self.segment_table.setRowCount(len(rows))
+        for row_index, row in enumerate(rows):
+            for column_index, value in enumerate(row):
+                self.segment_table.setItem(
+                    row_index, column_index, QTableWidgetItem(value)
                 )
 
-                reference_components = []
-                with gr.Accordion(f"2. Reference speakers · tối đa {MAX_REFERENCE_SPEAKERS}", open=True):
-                    gr.Markdown(
-                        "Thêm tên và mẫu giọng cho tối đa 3 người. Khuyến nghị mỗi mẫu dài **3–5 giây**, rõ tiếng."
-                    )
-                    for idx in range(1, MAX_REFERENCE_SPEAKERS + 1):
-                        name, audio = _reference_input(idx)
-                        reference_components.extend([name, audio])
+    @Slot(int, int)
+    def _seek_segment(self, row: int, _column: int) -> None:
+        item = self.segment_table.item(row, 2)
+        if item is None:
+            return
+        try:
+            seconds = _parse_timecode(item.text())
+        except ValueError:
+            return
+        self._player.setPosition(int(seconds * 1000))
+        self._player.pause()
 
-                with gr.Accordion("3. Analysis settings", open=False):
-                    scenario = gr.Dropdown(
-                        choices=SCENARIOS,
-                        value=SCENARIOS[0],
-                        label="Bối cảnh giáo dục",
-                    )
-                    profile = gr.Radio(
-                        choices=PROFILE_CHOICES,
-                        value=DEFAULT_PROFILE_KEY,
-                        type="value",
-                        label="Độ chính xác",
-                        info="Nhanh dùng CAM++; Chính xác dùng ERes2NetV2 lớn hơn và sẽ chậm hơn trên CPU.",
-                    )
-                    threshold = gr.Slider(
-                        minimum=0.20,
-                        maximum=0.90,
-                        value=DEFAULT_THRESHOLD,
-                        step=0.01,
-                        label="Similarity threshold",
-                        info="Threshold được giữ riêng theo profile; các giá trị tối ưu cần calibration trên dữ liệu thực tế.",
-                    )
 
-                gr.Markdown("Cần **1 target** và ít nhất **1 reference speaker** có cả tên + audio.")
-                analyze_btn = gr.Button("Analyze voices", variant="primary")
+def create_application(argv: list[str] | None = None) -> QApplication:
+    existing = QApplication.instance()
+    if existing is not None:
+        return existing
+    return QApplication(argv if argv is not None else sys.argv)
 
-                gr.Markdown("## Kết quả")
-                summary = gr.HTML(_placeholder_summary())
-                result_note = gr.Markdown()
-                lane_plot = gr.Plot(
-                    value=build_timeline_placeholder_figure(),
-                    label="Speaker timeline",
-                    show_label=True,
-                )
 
-                with gr.Group(visible=False) as results_shell:
-                    with gr.Accordion("Detected segments", open=True):
-                        segment_table = gr.Dataframe(
-                            value=[],
-                            headers=SEGMENT_HEADERS,
-                            column_count=len(SEGMENT_HEADERS),
-                            row_count=0,
-                            datatype=["str", "number", "str", "str", "str", "number", "number"],
-                            type="array",
-                            interactive=False,
-                            wrap=False,
-                            max_height=260,
-                            label="Segments",
-                        )
-                        selected_segment = gr.Markdown()
-
-                    with gr.Accordion("Research details · waveform & similarity", open=False):
-                        detail_plot = gr.Plot(label="Similarity diagnostics")
-                        gr.Markdown(
-                            "Đồ thị này phục vụ calibration/research. Similarity là tín hiệu đối sánh, không phải xác nhận danh tính tuyệt đối."
-                        )
-
-                target_mode.change(
-                    _switch_target_mode,
-                    inputs=[target_mode],
-                    outputs=[target_video, target_audio],
-                    queue=False,
-                )
-
-                profile.change(
-                    _apply_profile_defaults,
-                    inputs=[profile],
-                    outputs=[threshold],
-                    queue=False,
-                )
-
-                analyze_btn.click(
-                    _run_workspace,
-                    inputs=[*reference_components, target_audio, target_video, profile, threshold, scenario],
-                    outputs=[
-                        lane_plot,
-                        detail_plot,
-                        result_note,
-                        summary,
-                        segment_table,
-                        results_shell,
-                        selected_segment,
-                    ],
-                )
-
-                segment_table.select(
-                    _select_segment,
-                    inputs=None,
-                    outputs=[target_audio, target_video, selected_segment],
-                    show_progress="hidden",
-                    queue=False,
-                )
-
-            with gr.Tab("🏫 Ứng dụng trong giáo dục"):
-                gr.Markdown(
-                    """
-                    ## Các tình huống sử dụng
-
-                    **Thảo luận nhóm**  
-                    Đăng ký vài thành viên bằng mẫu giọng, rồi tìm vị trí từng người trong audio/video của buổi thảo luận.
-
-                    **Tranh biện / thuyết trình**  
-                    Tìm nhanh phần phát biểu của nhiều học sinh hoặc người trình bày trong cùng một video.
-
-                    **Luyện nói / đọc thành tiếng**  
-                    Đối sánh nhiều mẫu giọng đã biết với một recording chung để hỗ trợ xem lại.
-
-                    **Video hoạt động lớp học**  
-                    Upload video trực tiếp; hệ thống tách audio cục bộ và trả timeline theo timestamp của video.
-
-                    > **Giới hạn chức năng:** đây là *known-speaker localization* dựa trên các mẫu giọng người dùng chủ động cung cấp. Hệ thống không tự phát hiện danh tính người lạ, không phải full speaker diarization và không nên dùng làm căn cứ chấm điểm hay kỷ luật tự động.
-                    """
-                )
-
-            with gr.Tab("🛡️ Hướng dẫn & quyền riêng tư"):
-                gr.Markdown(
-                    """
-                    ### Quy trình sử dụng khuyến nghị
-                    1. Chọn video/audio target.
-                    2. Mở **Reference speakers**, đặt tên và record/upload 3–5 giây giọng rõ cho từng người.
-                    3. Có thể đóng Accordion reference sau khi chuẩn bị xong để tiết kiệm không gian.
-                    4. Chọn **Độ chính xác**: Nhanh cho vòng thử nghiệm, Chính xác khi cần model embedding lớn hơn.
-                    5. Chạy **Analyze voices**.
-                    6. Xem speaker timeline và click một segment để seek player tới timestamp tương ứng.
-                    7. Chỉ mở **Research details** khi cần xem waveform/similarity để calibration.
-
-                    ### Quyền riêng tư & cách diễn giải
-                    - Chỉ thu âm/video khi người tham gia và giáo viên/phụ huynh đã đồng ý theo quy định áp dụng.
-                    - Dùng tên hiển thị/mã thay vì thông tin định danh không cần thiết.
-                    - Matching là tín hiệu hỗ trợ tìm đoạn cần xem lại, không phải xác nhận danh tính tuyệt đối.
-                    - Thời lượng nói không đồng nghĩa với chất lượng đóng góp.
-                    - Một timestamp có thể match nhiều reference vì MVP dùng independent matching.
-
-                    > Audio track của video được giải mã cục bộ. Ứng dụng không cần gửi video lên dịch vụ speech-to-text hoặc cloud AI.
-                    """
-                )
-
-    return demo
+def build_app() -> MainWindow:
+    return MainWindow()
