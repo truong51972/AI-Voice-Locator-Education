@@ -10,8 +10,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 APP_NAME = "voice-locator"
 ASSETS_DIR = ROOT / "assets"
-APP_ICON = ASSETS_DIR / "voice-locator.ico"
+APP_ICON = ASSETS_DIR / "voice-locator.png"
 APP_ENTRYPOINT = ROOT / "src" / "voice_locator" / "app.py"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 
 
 def _package_dir(package: str) -> Path:
@@ -65,14 +66,14 @@ def _verify_models() -> None:
 
 
 def _verify_assets() -> None:
-    required = [
-        ASSETS_DIR / "voice-locator.png",
-        APP_ICON,
-    ]
-    missing = [path for path in required if not path.is_file()]
-    if missing:
-        pretty = "\n  - ".join(str(path) for path in missing)
-        raise SystemExit("Thiếu application icon assets:\n  - " + pretty)
+    if not APP_ICON.is_file():
+        raise SystemExit(f"Thiếu application icon asset:\n  - {APP_ICON}")
+    if APP_ICON.read_bytes()[: len(PNG_SIGNATURE)] != PNG_SIGNATURE:
+        raise SystemExit(
+            "Application icon source không phải PNG hợp lệ:\n"
+            f"  - {APP_ICON}\n"
+            "Windows build dùng PNG làm source-of-truth và để PyInstaller/Pillow chuyển sang ICO."
+        )
 
 
 def main() -> None:
@@ -95,7 +96,7 @@ def main() -> None:
         "--add-data",
         f"{ROOT / 'models'}{sep}models",
         "--add-data",
-        f"{ASSETS_DIR}{sep}assets",
+        f"{APP_ICON}{sep}assets",
         "--collect-all",
         "sherpa_onnx",
         "--collect-all",
@@ -140,7 +141,6 @@ def main() -> None:
     required_outputs = {
         "executable": executable,
         "assets/voice-locator.png": internal_dir / "assets" / "voice-locator.png",
-        "assets/voice-locator.ico": internal_dir / "assets" / "voice-locator.ico",
     }
     if os.name == "nt":
         required_outputs["sherpa_onnx/lib/onnxruntime.dll"] = (
